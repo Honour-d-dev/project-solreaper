@@ -1,0 +1,54 @@
+{
+  "name": "solidity-lsp",
+  "displayName": "Solidity LSP (Local)",
+  "description": "Minimal Solidity LSP client for local development",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:solidity",
+    "workspaceContains:**/*.sol"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "solidity",
+        "aliases": ["Solidity", "solidity"],
+        "extensions": [".sol"]
+      }
+    ],
+    "configuration": {
+      "title": "Solidity LSP",
+      "properties": {
+        "solidityLsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Solidity LSP server binary. If empty, uses ../lsp_server/target/debug/lsp_server relative to the extension."
+        },
+        "solidityLsp.trace.server": {
+          "type": "string",
+          "default": "verbose",
+          "description": "Trace level for the LSP server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0"
+  }
+}
