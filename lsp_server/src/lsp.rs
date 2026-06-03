@@ -1,6 +1,6 @@
 use crate::editor::EditorHost;
 use crate::loader::{self, LoadMsg};
-use crate::salsa_query_plan::{AnalysisHost, SalsaFile};
+use crate::salsa_db::{AnalysisHost, SalsaFile};
 use crate::utilities::{ format_symbol_hover, log_info, to_utf8path};
 use crate::workspace::{discover_workspace};
 

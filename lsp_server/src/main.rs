@@ -1,7 +1,7 @@
 mod utilities;
 mod lsp;
 mod cursor;
-mod salsa_query_plan;
+mod salsa_db;
 mod lowering;
 mod editor;
 mod workspace;

@@ -319,8 +319,13 @@ mod tests {
 
     #[test]
     fn test_print_tree_counter_user() {
-        let path = camino::Utf8PathBuf::from("/home/honour/solidity/lsp-test/src/counterUser.sol");
-        let source = std::fs::read_to_string(&path).expect("failed to read file");
+        //To run test:
+        //TEST_COUNTER_USER_PATH=/path/to/sol/file.sol cargo test test_print_tree_counter_user
+        let path = std::env::var("TEST_COUNTER_USER_PATH")
+            .map(camino::Utf8PathBuf::from)
+            .unwrap_or_default();
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read file at {path}: {e}"));
 
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_solidity::LANGUAGE.into()).expect("failed to set language");
