@@ -1,9 +1,11 @@
+use std::fmt;
 use std::mem;
 
 use camino::Utf8PathBuf;
 use tree_sitter::{Node, Range, Tree, TreeCursor};
 
 use crate::cursor::{Scope, ScopeBuilder, ScopeId, ScopeNavigator, ScopeType};
+use crate::utilities::log_info;
 use crate::utilities::{iterate_children, resolve_import};
 use crate::workspace::Remapping;
 
@@ -16,7 +18,12 @@ pub(crate) struct File {//rename to prsedFile
     pub path: Utf8PathBuf,
     pub imports: Vec<Import>,
     pub contracts: Vec<Contract>,
+    pub interfaces: Vec<Interface>,
+    pub libraries: Vec<Library>,
     pub free_functions: Vec<Function>,
+    pub events: Vec<Event>,
+    pub errors: Vec<Error>,
+    pub structs: Vec<Struct>,
     pub diagnostics: Vec<LoweringDiagnostic>,
     pub scope: Scope,
 }
@@ -62,8 +69,15 @@ pub(crate) struct ImportItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Symbol {//i think symbols should have parents eg a block/func/contract/None(file)
     Contract(Contract),
+    Interface(Interface),
+    Library(Library),
     Function(Function),
+    IFunction(IFunction),
     Variable(Variable),
+    Event(Event),
+    Error(Error),
+    Struct(Struct),
+    Modifier(Modifier),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +90,36 @@ pub(crate) struct Contract {
     pub bases: Vec<String>,
     pub state_vars: Vec<Variable>,
     pub functions: Vec<Function>,
+    pub events: Vec<Event>,
+    pub errors: Vec<Error>,
+    pub structs: Vec<Struct>,
+    pub modifiers: Vec<Modifier>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Interface {
+    pub name: String,
+    pub docs: String,
+    pub signature: String,
+    pub range: Range,
+    pub scope: ScopeId,
+    pub bases: Vec<String>,
+    pub functions: Vec<IFunction>,
+    pub events: Vec<Event>,
+    pub errors: Vec<Error>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Library {
+    pub name: String,
+    pub docs: String,
+    pub signature: String,
+    pub range: Range,
+    pub scope: ScopeId,
+    pub functions: Vec<Function>,
+    pub events: Vec<Event>,
+    pub errors: Vec<Error>,
+    pub structs: Vec<Struct>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +131,57 @@ pub(crate) struct Function {
     pub scope: ScopeId,
     pub parameters: Vec<Variable>,
     pub local_vars: Vec<Variable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Event {
+    pub name: String,
+    pub docs: String,
+    pub signature: String,
+    pub range: Range,
+    pub scope: ScopeId,
+    pub parameters: Vec<Variable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Error {
+    pub name: String,
+    pub docs: String,
+    pub signature: String,
+    pub range: Range,
+    pub scope: ScopeId,
+    pub parameters: Vec<Variable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Modifier {
+    pub name: String,
+    pub docs: String,
+    pub signature: String,
+    pub range: Range,
+    pub scope: ScopeId,
+    pub parameters: Vec<Variable>,
+    pub local_vars: Vec<Variable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Struct {
+    pub name: String,
+    pub docs: String,
+    pub signature: String,
+    pub range: Range,
+    pub scope: ScopeId,
+    pub fields: Vec<Variable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IFunction {
+    pub name: String,
+    pub docs: String,
+    pub signature: String,
+    pub range: Range,
+    pub scope: ScopeId,
+    pub parameters: Vec<Variable>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,12 +200,15 @@ pub(crate) enum VariableKind {
     State,
     Local,
     Parameter,
+    StructField,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VariableType {
     Primitive(PrimitiveType),
     UserDefined(String),
+    Array { typ: Box<VariableType>, size: Option<usize> },
+    Mapping { key: Box<VariableType>, value: Box<VariableType> },
     Unknown,
 }
 
@@ -122,6 +220,39 @@ pub(crate) enum PrimitiveType {
     Address,
     String,
     Bytes,
+}
+
+impl fmt::Display for PrimitiveType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PrimitiveType::Int => write!(f, "int"),
+            PrimitiveType::Uint => write!(f, "uint"),
+            PrimitiveType::Bool => write!(f, "bool"),
+            PrimitiveType::Address => write!(f, "address"),
+            PrimitiveType::String => write!(f, "string"),
+            PrimitiveType::Bytes => write!(f, "bytes"),
+        }
+    }
+}
+
+impl fmt::Display for VariableType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VariableType::Primitive(p) => write!(f, "{p}"),
+            VariableType::UserDefined(name) => write!(f, "{name}"),
+            VariableType::Array { typ, size } => {
+                if let Some(s) = size {
+                    write!(f, "{typ}[{s}]")
+                } else {
+                    write!(f, "{typ}[]")
+                }
+            }
+            VariableType::Mapping { key, value } => {
+                write!(f, "mapping({key} => {value})")
+            }
+            VariableType::Unknown => write!(f, "Unknown"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +308,12 @@ impl<'src> Lowerer<'src> {
                 path: file_path.clone(),
                 imports: Vec::new(),
                 contracts: Vec::new(),
+                interfaces: Vec::new(),
+                libraries: Vec::new(),
                 free_functions: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
+                structs: Vec::new(),
                 diagnostics: Vec::new(),
                 scope: Scope::new(),
             },
@@ -209,10 +345,32 @@ impl<'src> Lowerer<'src> {
                         self.lower_contract(cursor, mem::take(&mut pending_doc));
                     self.file.contracts.push(contract);
                 }
-                "function_definition" => {
+                "function_definition" => {//free functions
                     let function =
                         self.lower_function(cursor, mem::take(&mut pending_doc));
                     self.file.free_functions.push(function);
+                }
+                "interface_declaration" => {
+                    let interface =
+                        self.lower_interface(cursor, mem::take(&mut pending_doc));
+                    self.file.interfaces.push(interface);
+                }
+                "library_declaration" => {
+                    let library =
+                        self.lower_library(cursor, mem::take(&mut pending_doc));
+                    self.file.libraries.push(library);
+                }
+                "event_definition" => {
+                    let event = self.lower_event(cursor, mem::take(&mut pending_doc));
+                    self.file.events.push(event);
+                }
+                "struct_declaration" => {
+                    let strukt = self.lower_struct(cursor, mem::take(&mut pending_doc));
+                    self.file.structs.push(strukt);
+                }
+                "error_declaration" => {
+                    let error = self.lower_error(cursor, mem::take(&mut pending_doc));
+                    self.file.errors.push(error);
                 }
                 _ => {//@TODO add error, struct , enum
                     pending_doc.clear();
@@ -277,7 +435,7 @@ impl<'src> Lowerer<'src> {
                 (name, alias) if !name.is_empty()  => ImportType::Named { symbols },
                 (name, alias) if name.is_empty() && alias.is_empty() => ImportType::Full,
                 (name, alias) if name.is_empty() && !alias.is_empty() => ImportType::Namespace { alias },
-                _ => ImportType::Full,//never reached, match is exhaustive - just to satisfy exhaustive requrement else compiler complains
+                _ => ImportType::Full,//never reached, match is logically exhaustive - just to satisfy exhaustive requrement else compiler complains
             };
 
             self.file.imports.push(Import {
@@ -302,6 +460,10 @@ impl<'src> Lowerer<'src> {
         let mut bases = Vec::new();
         let mut state_vars = Vec::new();
         let mut functions = Vec::new();
+        let mut events = Vec::new();
+        let mut errors = Vec::new();
+        let mut structs = Vec::new();
+        let mut modifiers = Vec::new();
         let mut body_docs = String::new();
 
         iterate_children!(cursor, {
@@ -322,8 +484,6 @@ impl<'src> Lowerer<'src> {
                             "comment" => {
                                 self.maybe_collect_docs(cursor.node(), &mut body_docs);
                             }
-                            //ideally if summarize we should lower private fns and vars
-                            //but current impl doesnt trivially support that
                             "state_variable_declaration" => {
                                 let state_var = self.lower_variable(
                                     cursor,
@@ -339,6 +499,22 @@ impl<'src> Lowerer<'src> {
                                     mem::take(&mut body_docs),
                                 );
                                 functions.push(function);
+                            }
+                            "event_definition" => {
+                                let event = self.lower_event(cursor, mem::take(&mut body_docs));
+                                events.push(event);
+                            }
+                            "struct_declaration" => {
+                                let strukt = self.lower_struct(cursor, mem::take(&mut body_docs));
+                                structs.push(strukt);
+                            }
+                            "error_declaration" => {
+                                let error = self.lower_error(cursor, mem::take(&mut body_docs));
+                                errors.push(error);
+                            }
+                            "modifier_definition" => {
+                                let modifier = self.lower_modifier(cursor, mem::take(&mut body_docs));
+                                modifiers.push(modifier);
                             }
                             _ => {//@TODO add error, struct, enum
                                 body_docs.clear();
@@ -366,6 +542,163 @@ impl<'src> Lowerer<'src> {
             bases,
             state_vars,
             functions,
+            events,
+            errors,
+            structs,
+            modifiers,
+        }
+    }
+
+    fn lower_interface(
+        &mut self,
+        cursor: &mut TreeCursor<'_>,
+        docs: String,
+    ) -> Interface {
+        self.scope_builder
+            .to_next(cursor.node().range(), ScopeType::Contract);
+        let contract_scope = self.scope_builder.current();
+
+        let mut name = String::new();
+        let mut bases = Vec::new();
+        let mut functions = Vec::new();
+        let mut events = Vec::new();
+        let mut errors = Vec::new();
+        let mut body_docs = String::new();
+
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                "identifier" => {
+                    name = self.node_text(&cursor.node()).to_string();
+                }
+                "inheritance_specifier" => {
+                    iterate_children!(cursor, {
+                        if cursor.node().kind() == "user_defined_type" {
+                            bases.push(self.node_text(&cursor.node()).to_string());
+                        }
+                    });
+                }
+                "contract_body" => {
+                    iterate_children!(cursor, {
+                        match cursor.node().kind() {
+                            "comment" => {
+                                self.maybe_collect_docs(cursor.node(), &mut body_docs);
+                            }
+                            "function_definition" => {
+                                let function = self.lower_ifunction(
+                                    cursor,
+                                    mem::take(&mut body_docs),
+                                );
+                                functions.push(function);
+                            }
+                            "event_definition" => {
+                                let event = self.lower_event(cursor, mem::take(&mut body_docs));
+                                events.push(event);
+                            }
+                            "error_declaration" => {
+                                let error = self.lower_error(cursor, mem::take(&mut body_docs));
+                                errors.push(error);
+                            }
+                            _ => {//@TODO add error, struct, enum
+                                body_docs.clear();
+                            }
+                        }
+                    });
+                }
+                _ => {}
+            }
+        });
+
+        //@TODO might be unnecessary - will contract be in tree if no identifier??
+        if name.is_empty() {
+            self.push_diagnostic("contract declaration without identifier", cursor.node().range());
+        }
+
+        
+        self.scope_builder.to_parent();
+        Interface {
+            name,
+            docs,
+            signature: self.signature(&cursor.node()),
+            range: cursor.node().range(),
+            scope: contract_scope,
+            bases,
+            functions,
+            events,
+            errors,
+        }
+    }
+
+    fn lower_library(
+        &mut self,
+        cursor: &mut TreeCursor<'_>,
+        docs: String,
+    ) -> Library {
+        self.scope_builder
+            .to_next(cursor.node().range(), ScopeType::Contract);
+        let library_scope = self.scope_builder.current();
+
+        let mut name = String::new();
+        let mut functions = Vec::new();
+        let mut events = Vec::new();
+        let mut errors = Vec::new();
+        let mut structs = Vec::new();
+        let mut body_docs = String::new();
+
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                "identifier" => {
+                    name = self.node_text(&cursor.node()).to_string();
+                }
+                "contract_body" => {
+                    iterate_children!(cursor, {
+                        match cursor.node().kind() {
+                            "comment" => {
+                                self.maybe_collect_docs(cursor.node(), &mut body_docs);
+                            }
+                            "function_definition" => {
+                                let function = self.lower_function(
+                                    cursor,
+                                    mem::take(&mut body_docs),
+                                );
+                                functions.push(function);
+                            }
+                            "event_definition" => {
+                                let event = self.lower_event(cursor, mem::take(&mut body_docs));
+                                events.push(event);
+                            }
+                            "struct_declaration" => {
+                                let strukt = self.lower_struct(cursor, mem::take(&mut body_docs));
+                                structs.push(strukt);
+                            }
+                            "error_declaration" => {
+                                let error = self.lower_error(cursor, mem::take(&mut body_docs));
+                                errors.push(error);
+                            }
+                            _ => {
+                                body_docs.clear();
+                            }
+                        }
+                    });
+                }
+                _ => {}
+            }
+        });
+
+        if name.is_empty() {
+            self.push_diagnostic("library declaration without identifier", cursor.node().range());
+        }
+
+        self.scope_builder.to_parent();
+        Library {
+            name,
+            docs,
+            signature: self.signature(&cursor.node()),
+            range: cursor.node().range(),
+            scope: library_scope,
+            functions,
+            events,
+            errors,
+            structs,
         }
     }
 
@@ -385,6 +718,8 @@ impl<'src> Lowerer<'src> {
 
         iterate_children!(cursor, {
             match cursor.node().kind() {
+                //@TODO use visibility to shortcircuit on summarized
+                // this fn would have to return an option though
                 "identifier" => {
                     name = self.node_text(&cursor.node()).to_string();
                 }
@@ -418,6 +753,216 @@ impl<'src> Lowerer<'src> {
             scope: function_scope,//@NOTE do i add a decl_scope and body_scope? this is body scope though
             parameters,
             local_vars,
+        }
+    }
+
+    fn lower_ifunction(
+        &mut self,
+        cursor: &mut TreeCursor<'_>,
+        docs: String,
+    ) -> IFunction {
+        let function_scope = self.scope_builder.current();
+
+        let mut name = String::new();
+        let mut parameters = Vec::new();
+
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                //@TODO use visibility to shortcircuit on summarized
+                // this fn would have to return an option though
+                "identifier" => {
+                    name = self.node_text(&cursor.node()).to_string();
+                }
+                "parameter" if !self.summarize => {
+                    let parameter = self.lower_variable(
+                        cursor,
+                        VariableKind::Parameter,
+                        function_scope,
+                        String::new(),
+                    );
+                    parameters.push(parameter);
+                }
+                _ => {}
+            }
+        });
+
+
+        IFunction {
+            name,
+            docs,
+            signature: self.signature(&cursor.node()),
+            range: cursor.node().range(),
+            scope: function_scope,//@NOTE do i add a decl_scope and body_scope? this is body scope though
+            parameters
+        }
+    }
+
+
+    fn lower_event(
+        &mut self,
+        cursor: &mut TreeCursor<'_>,
+        docs: String,
+    ) -> Event {
+        let event_scope = self.scope_builder.current();
+
+        let mut name = String::new();
+        let mut parameters = Vec::new();
+
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                "identifier" => {
+                    name = self.node_text(&cursor.node()).to_string();
+                }
+                "parameter" if !self.summarize => {
+                    let parameter = self.lower_variable(
+                        cursor,
+                        VariableKind::Parameter,
+                        event_scope,
+                        String::new(),
+                    );
+                    parameters.push(parameter);
+                }
+                _ => {}
+            }
+        });
+
+        Event {
+            name,
+            docs,
+            signature: self.signature(&cursor.node()),
+            range: cursor.node().range(),
+            scope: event_scope,
+            parameters,
+        }
+    }
+
+
+    fn lower_error(
+        &mut self,
+        cursor: &mut TreeCursor<'_>,
+        docs: String,
+    ) -> Error {
+        let error_scope = self.scope_builder.current();
+
+        let mut name = String::new();
+        let mut parameters = Vec::new();
+
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                "identifier" => {
+                    name = self.node_text(&cursor.node()).to_string();
+                }
+                "parameter" if !self.summarize => {
+                    let parameter = self.lower_variable(
+                        cursor,
+                        VariableKind::Parameter,
+                        error_scope,
+                        String::new(),
+                    );
+                    parameters.push(parameter);
+                }
+                _ => {}
+            }
+        });
+
+        Error {
+            name,
+            docs,
+            signature: self.signature(&cursor.node()),
+            range: cursor.node().range(),
+            scope: error_scope,
+            parameters,
+        }
+    }
+
+
+    fn lower_modifier(
+        &mut self,
+        cursor: &mut TreeCursor<'_>,
+        docs: String,
+    ) -> Modifier {
+        let modifier_scope = self.scope_builder.current();
+
+        let mut name = String::new();
+        let mut parameters = Vec::new();
+        let mut local_vars = Vec::new();
+        let mut body_docs = String::new();
+
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                "identifier" => {
+                    name = self.node_text(&cursor.node()).to_string();
+                }
+                "parameter" if !self.summarize => {
+                    let parameter = self.lower_variable(
+                        cursor,
+                        VariableKind::Parameter,
+                        modifier_scope,
+                        String::new(),
+                    );
+                    parameters.push(parameter);
+                }
+                "function_body" if !self.summarize => {
+                    self.collect_local_vars(
+                        cursor,
+                        &mut local_vars,
+                        &mut body_docs,
+                    );
+                }
+                _ => {}
+            }
+        });
+
+        Modifier {
+            name,
+            docs,
+            signature: self.signature(&cursor.node()),
+            range: cursor.node().range(),
+            scope: modifier_scope,
+            parameters,
+            local_vars,
+        }
+    }
+
+    fn lower_struct(
+        &mut self,
+        cursor: &mut TreeCursor<'_>,
+        docs: String,
+    ) -> Struct {
+        let struct_scope = self.scope_builder.current();
+
+        let mut name = String::new();
+        let mut fields = Vec::new();
+
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                "identifier" => {
+                    name = self.node_text(&cursor.node()).to_string();
+                }
+                "struct_body" => {
+                    iterate_children!(cursor, {
+                        if cursor.node().kind() == "struct_member" {
+                            let field = self.lower_variable(
+                                cursor,
+                                VariableKind::StructField,
+                                struct_scope,
+                                String::new(),
+                            );
+                            fields.push(field);
+                        }
+                    });
+                }
+                _ => {}
+            }
+        });
+
+        Struct {
+            name,
+            docs,
+            signature: self.signature(&cursor.node()),
+            range: cursor.node().range(),
+            scope: struct_scope,
+            fields,
         }
     }
 
@@ -504,14 +1049,27 @@ impl<'src> Lowerer<'src> {
 
         iterate_children!(cursor, {
             match cursor.node().kind() {
+                //@TODO use visibility to shortcircuit on summarized
                 "identifier" if name.is_none() => {
                     name = Some(self.node_text(&cursor.node()).to_string());
                 }
                 "type_name" => {
-                    let full_type = self.node_text(&cursor.node()).to_string();
-                    typ = self
-                        .extract_type_ref(cursor)
-                        .unwrap_or(VariableType::UserDefined(full_type));
+                    //@TODO array support
+                    let typ_str = self.node_text(&cursor.node()).to_string();
+                    let (is_array, size) = if typ_str.ends_with("]") {
+                        let size = typ_str.find("[").map(|i| {
+                            let s = &typ_str[i+1..typ_str.len()-1];
+                            usize::from_str_radix(s, 10).ok()
+                        }).flatten();
+                        (true, size)
+                    } else {
+                        (false, None)
+                    };
+                    typ = if is_array {
+                        VariableType::Array{typ: Box::new(self.extract_type_name(cursor)), size}
+                    } else {
+                        self.extract_type_name(cursor)
+                    }
                 }
                 _ => {}
             }
@@ -528,25 +1086,45 @@ impl<'src> Lowerer<'src> {
         }
     }
 
-    fn extract_type_ref(&self, cursor: &mut TreeCursor<'_>) -> Option<VariableType> {
-        match cursor.node().kind() {
-            "primitive_type" => {
-                let primitive = parse_primitive_type(self.node_text(&cursor.node()))?;
-                Some(VariableType::Primitive(primitive))
-            }
-            "user_defined_type" => {
-                Some(VariableType::UserDefined(self.node_text(&cursor.node()).to_string()))
-            }
-            _ => {
-                let mut resolved = None;
-                iterate_children!(cursor, {
-                    if resolved.is_none() {
-                        resolved = self.extract_type_ref(cursor);
+    fn extract_type_name(&self, cursor: &mut TreeCursor<'_>) -> VariableType {
+        let mut typp = VariableType::Unknown;
+        iterate_children!(cursor, {
+            match cursor.node().kind() {
+                "primitive_type" => {
+                    match parse_primitive_type(self.node_text(&cursor.node())) {
+                        Some(primitive) => {
+                            typp = VariableType::Primitive(primitive);
+                        }
+                        None => {
+                            log_info(&format!("Unkown type {}", self.node_text(&cursor.node())));
+                            typp = VariableType::Unknown;
+                        }
                     }
-                });
-                resolved
+                }
+                "user_defined_type" => {
+                    typp = VariableType::UserDefined(self.node_text(&cursor.node()).to_string());
+                }
+                "type_name" => {//type_name again, so we recurse
+                    let typ_str = self.node_text(&cursor.node()).to_string();
+                    let (is_array, size) = if typ_str.ends_with("]") {
+                        let size = typ_str.find("[").map(|i| {
+                            let s = &typ_str[i+1..typ_str.len()-1];
+                            usize::from_str_radix(s, 10).ok()
+                        }).flatten();
+                        (true, size)
+                    } else {
+                        (false, None)
+                    };                    
+                    typp = if is_array {
+                        VariableType::Array{ typ: Box::new(self.extract_type_name(cursor)), size}
+                    } else {
+                        self.extract_type_name(cursor)
+                    };
+                }
+                _ => {},
             }
-        }
+        });
+        typp
     }
 
     fn maybe_collect_docs(&self, node: Node<'_>, buffer: &mut String) {
@@ -594,7 +1172,8 @@ fn parse_primitive_type(typ: &str) -> Option<PrimitiveType> {
     if typ == "bool" {
         return Some(PrimitiveType::Bool);
     }
-    if typ == "address" {
+    if typ == "address" || typ == "address payable" {
+        //@TODO combine for now , payable adds extra metadata/fns to the type so there should be a distinction later
         return Some(PrimitiveType::Address);
     }
     if typ == "string" {

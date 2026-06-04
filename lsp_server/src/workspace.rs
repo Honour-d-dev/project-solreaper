@@ -295,6 +295,7 @@ fn parse_remappings_txt(path: &Utf8Path) -> Option<Vec<Remapping>> {
 
 fn collect_sol_files(dirs: &[Utf8PathBuf]) -> Vec<Utf8PathBuf> {
     let mut iter = dirs.iter();
+    //@TODO disable loading test & script folders
     let Some(first) = iter.next() else {
         return Vec::new();
     };

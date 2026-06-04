@@ -136,17 +136,63 @@ pub(crate) fn format_symbol_hover(symbol: &Symbol) -> String {
                 function.local_vars.len(),
             ),
         ),
+        Symbol::IFunction(function) => (
+            "Interface Function",
+            function.name.as_str(),
+            function.docs.as_str(),
+            function.signature.as_str(),
+            format!("- Parameters: {}", function.parameters.len()),
+        ),
+        Symbol::Interface(interface) => (
+            "Interface",
+            interface.name.as_str(),
+            interface.docs.as_str(),
+            interface.signature.as_str(),
+            format!("- Bases: {}", if interface.bases.is_empty() { "None".to_string() } else { interface.bases.join(", ") }),
+        ),
+        Symbol::Library(library) => (
+            "Library",
+            library.name.as_str(),
+            library.docs.as_str(),
+            library.signature.as_str(),
+            format!("- Functions: {}", library.functions.len()),
+        ),
+        Symbol::Event(event) => (
+            "Event",
+            event.name.as_str(),
+            event.docs.as_str(),
+            event.signature.as_str(),
+            format!("- Parameters: {}", event.parameters.len()),
+        ),
+        Symbol::Error(error) => (
+            "Error",
+            error.name.as_str(),
+            error.docs.as_str(),
+            error.signature.as_str(),
+            format!("- Parameters: {}", error.parameters.len()),
+        ),
+        Symbol::Struct(strukt) => (
+            "Struct",
+            strukt.name.as_str(),
+            strukt.docs.as_str(),
+            strukt.signature.as_str(),
+            format!("- Fields: {}", strukt.fields.len()),
+        ),
+        Symbol::Modifier(modifier) => (
+            "Modifier",
+            modifier.name.as_str(),
+            modifier.docs.as_str(),
+            modifier.signature.as_str(),
+            format!("- Parameters: {}", modifier.parameters.len()),
+        ),
         Symbol::Variable(variable) => {
             let kind = match variable.kind {
                 VariableKind::State => "state",
                 VariableKind::Local => "local",
                 VariableKind::Parameter => "parameter",
+                VariableKind::StructField => "struct field",
             };
-            let typ = match &variable.typ {
-                VariableType::Primitive(primitive) => format!("{primitive:?}"),
-                VariableType::UserDefined(name) => name.clone(),
-                VariableType::Unknown => "Unknown".to_string(),
-            };
+            let typ = variable.typ.to_string();
 
             (
                 "Variable",
@@ -231,12 +277,17 @@ pub(crate) fn print_named_tree(cursor: &mut tree_sitter::TreeCursor, source_code
     if !cursor.node().is_named() { return "".to_string(); }
     let indent = "  ".repeat(indentation);//todo for only named nodes
     let kind = cursor.node().kind();
-    let text = &source_code[cursor.node().byte_range()].replace('\n', &format!("\n {indent} "));
+    let text = &source_code[cursor.node().byte_range()];
+    let text = if text.len() > 100 {
+        text[..100].replace('\n', &format!("\n {indent} "))
+    } else {
+        text.replace('\n', &format!("\n {indent} "))
+    };
 
     let mut result = format!("\n{indent}{kind}: \"{text}\"");//add field name and id if present so wee see what its about
 
     iterate_children!(cursor, {
-        result.push_str(&print_tree(cursor, source_code, indentation + 2));
+        result.push_str(&print_named_tree(cursor, source_code, indentation + 2));
     });
     return result;
 }

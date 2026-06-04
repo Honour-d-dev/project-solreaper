@@ -16,7 +16,14 @@ fn symbol_name(symbol: &Symbol) -> Option<&str> {
     match symbol {
         Symbol::Contract(contract) => Some(contract.name.as_str()),
         Symbol::Function(function) => Some(function.name.as_str()),
+        Symbol::IFunction(function) => Some(function.name.as_str()),
         Symbol::Variable(variable) => variable.name.as_deref(),
+        Symbol::Interface(interface) => Some(interface.name.as_str()),
+        Symbol::Library(library) => Some(library.name.as_str()),
+        Symbol::Event(event) => Some(event.name.as_str()),
+        Symbol::Error(error) => Some(error.name.as_str()),
+        Symbol::Struct(strukt) => Some(strukt.name.as_str()),
+        Symbol::Modifier(modifier) => Some(modifier.name.as_str()),
     }
 }
 
@@ -24,7 +31,14 @@ fn symbol_range(symbol: &Symbol) -> Range {
     match symbol {
         Symbol::Contract(contract) => contract.range,
         Symbol::Function(function) => function.range,
+        Symbol::IFunction(function) => function.range,
         Symbol::Variable(variable) => variable.range,
+        Symbol::Interface(interface) => interface.range,
+        Symbol::Library(library) => library.range,
+        Symbol::Event(event) => event.range,
+        Symbol::Error(error) => error.range,
+        Symbol::Struct(strukt) => strukt.range,
+        Symbol::Modifier(modifier) => modifier.range,
     }
 }
 
@@ -240,6 +254,134 @@ fn file_symbols(
             for local_var in function.local_vars.iter() {
                 out.push(Symbol::Variable(local_var.clone()));
             }
+        }
+
+        for event in contract.events.iter() {
+            out.push(Symbol::Event(event.clone()));
+
+            for parameter in event.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+        }
+
+        for error in contract.errors.iter() {
+            out.push(Symbol::Error(error.clone()));
+
+            for parameter in error.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+        }
+
+        for strukt in contract.structs.iter() {
+            out.push(Symbol::Struct(strukt.clone()));
+
+            for field in strukt.fields.iter() {
+                out.push(Symbol::Variable(field.clone()));
+            }
+        }
+
+        for modifier in contract.modifiers.iter() {
+            out.push(Symbol::Modifier(modifier.clone()));
+
+            for parameter in modifier.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+
+            for local_var in modifier.local_vars.iter() {
+                out.push(Symbol::Variable(local_var.clone()));
+            }
+        }
+    }
+
+    for interface in lowered.interfaces.iter() {
+        out.push(Symbol::Interface(interface.clone()));
+
+        for function in interface.functions.iter() {
+            out.push(Symbol::IFunction(function.clone()));
+
+            for parameter in function.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+        }
+
+        for event in interface.events.iter() {
+            out.push(Symbol::Event(event.clone()));
+
+            for parameter in event.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+        }
+
+        for error in interface.errors.iter() {
+            out.push(Symbol::Error(error.clone()));
+
+            for parameter in error.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+        }
+    }
+
+    for library in lowered.libraries.iter() {
+        out.push(Symbol::Library(library.clone()));
+
+        for function in library.functions.iter() {
+            out.push(Symbol::Function(function.clone()));
+
+            for parameter in function.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+
+            for local_var in function.local_vars.iter() {
+                out.push(Symbol::Variable(local_var.clone()));
+            }
+        }
+
+        for event in library.events.iter() {
+            out.push(Symbol::Event(event.clone()));
+
+            for parameter in event.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+        }
+
+        for error in library.errors.iter() {
+            out.push(Symbol::Error(error.clone()));
+
+            for parameter in error.parameters.iter() {
+                out.push(Symbol::Variable(parameter.clone()));
+            }
+        }
+
+        for strukt in library.structs.iter() {
+            out.push(Symbol::Struct(strukt.clone()));
+
+            for field in strukt.fields.iter() {
+                out.push(Symbol::Variable(field.clone()));
+            }
+        }
+    }
+
+    for event in lowered.events.iter() {
+        out.push(Symbol::Event(event.clone()));
+
+        for parameter in event.parameters.iter() {
+            out.push(Symbol::Variable(parameter.clone()));
+        }
+    }
+
+    for error in lowered.errors.iter() {
+        out.push(Symbol::Error(error.clone()));
+
+        for parameter in error.parameters.iter() {
+            out.push(Symbol::Variable(parameter.clone()));
+        }
+    }
+
+    for strukt in lowered.structs.iter() {
+        out.push(Symbol::Struct(strukt.clone()));
+
+        for field in strukt.fields.iter() {
+            out.push(Symbol::Variable(field.clone()));
         }
     }
 

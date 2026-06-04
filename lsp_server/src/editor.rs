@@ -102,8 +102,8 @@ impl EditorHost {
 
                 let start_byte = rope.char_to_byte(start);
                 let end_byte = rope.char_to_byte(end);
-                let start_position = byte_to_point(&rope, start_byte);
-                let end_position = byte_to_point(&rope, end_byte);
+                let start_position = byte_to_point(&rope, start_byte);//i can save one O(logn) here by passing position.line
+                let end_position = byte_to_point(&rope, end_byte);//and here
 
                 rope.remove(start..end);
                 rope.insert(start, &change.text);
