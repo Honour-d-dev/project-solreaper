@@ -21,3 +21,4 @@ salsa = "0.26.2"
 toml = "1.1.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+smol_str = "0.3.6"

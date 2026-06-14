@@ -1,0 +1,192 @@
+#![allow(unused)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct NodeKind(u16);
+
+impl NodeKind {
+    #[inline]
+    pub const fn as_u16(self) -> u16 {
+        self.0
+    }
+}
+
+impl From<u16> for NodeKind {
+    #[inline]
+    fn from(id: u16) -> Self {
+        Self(id)
+    }
+}
+
+impl From<NodeKind> for u16 {
+    #[inline]
+    fn from(kind: NodeKind) -> Self {
+        kind.0
+    }
+}
+
+impl PartialEq<NodeKind> for u16 {
+    #[inline]
+    fn eq(&self, other: &NodeKind) -> bool {
+        *self == other.0
+    }
+}
+
+
+pub mod node_kind {
+    use super::NodeKind;
+
+    // Thin wrapper around TS node kind IDs, mostly named nodes
+    pub const IDENTIFIER: NodeKind = NodeKind(1);
+    pub const COMMENT: NodeKind = NodeKind(328);
+    pub const SOURCE_FILE: NodeKind = NodeKind(329);
+
+    pub const IMPORT_DIRECTIVE: NodeKind = NodeKind(339);
+    pub const CONTRACT_DEFINITION: NodeKind = NodeKind(350);
+    pub const FUNCTION_DEFINITION: NodeKind = NodeKind(420);
+    pub const STRUCT_DEFINITION: NodeKind = NodeKind(360);
+    pub const LIBRARY_DEFINITION: NodeKind = NodeKind(354);
+    pub const INTERFACE_DEFINITION: NodeKind = NodeKind(353);
+    pub const ENUM_DEFINITION: NodeKind = NodeKind(363);
+    pub const ERROR_DEFINITION: NodeKind = NodeKind(351);
+    pub const MODIFIER_DEFINITION: NodeKind = NodeKind(417);
+    pub const EVENT_DEFINITION: NodeKind = NodeKind(365);
+
+    pub const INHERITANCE_SPECIFIER: NodeKind = NodeKind(357);
+    pub const CONTRACT_BODY: NodeKind = NodeKind(358);
+    pub const FUNCTION_BODY: NodeKind = NodeKind(426);
+    pub const STRUCT_BODY: NodeKind = NodeKind(362);
+
+    pub const PARAMETER: NodeKind = NodeKind(454);
+    pub const ERROR_PARAMETER: NodeKind = NodeKind(352);
+    pub const EVENT_PARAMETER: NodeKind = NodeKind(367);
+    pub const STATE_VAR_DECLARATION: NodeKind = NodeKind(412);
+    pub const VAR_DECLARATION: NodeKind = NodeKind(398);
+
+    pub const STATEMENT: NodeKind = NodeKind(372);
+    pub const VAR_DECLARATION_STATEMENT: NodeKind = NodeKind(397);
+    pub const BLOCK_STATEMENT: NodeKind = NodeKind(396);
+    pub const FOR_STATEMENT: NodeKind = NodeKind(402);
+    pub const IF_STATEMENT: NodeKind = NodeKind(401);
+    pub const WHILE_STATEMENT: NodeKind = NodeKind(403);
+    pub const TRY_STATEMENT: NodeKind = NodeKind(408);
+
+    pub const TYPE_NAME: NodeKind = NodeKind(448);
+    pub const PRIMITIVE_TYPE: NodeKind = NodeKind(460);
+    pub const USER_DEFINED_TYPE: NodeKind = NodeKind(456);
+    // ...
+}
+
+
+/// Each node kind is associated with specific fields (represented by field kind)
+/// For example A contract has the following fields - name & body
+/// For example An Import has the following fields - import name, alias & source
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct FieldKind(u16);
+
+impl FieldKind {
+    #[inline]
+    pub const fn as_u16(self) -> u16 {
+        self.0
+    }
+}
+
+impl From<u16> for FieldKind {
+    #[inline]
+    fn from(id: u16) -> Self {
+        Self(id)
+    }
+}
+
+impl From<FieldKind> for u16 {
+    #[inline]
+    fn from(kind: FieldKind) -> Self {
+        kind.0
+    }
+}
+
+impl PartialEq<FieldKind> for u16 {
+    #[inline]
+    fn eq(&self, other: &FieldKind) -> bool {
+        *self == other.0
+    }
+}
+
+pub mod field_kind {
+    use super::FieldKind;
+
+    // Thin wrapper around TS field IDs from `enum ts_field_identifiers`
+    pub const ALIAS: FieldKind = FieldKind(1);
+    // pub const ANCESTOR: FieldKind = FieldKind(2);
+    // pub const ANCESTOR_ARGUMENTS: FieldKind = FieldKind(3);
+    // pub const ARGUMENT: FieldKind = FieldKind(4);
+    // pub const ATTEMPT: FieldKind = FieldKind(5);
+    // pub const BASE: FieldKind = FieldKind(6);
+    pub const BODY: FieldKind = FieldKind(7);
+    // pub const CONDITION: FieldKind = FieldKind(8);
+    // pub const ELSE: FieldKind = FieldKind(9);
+    pub const ERROR: FieldKind = FieldKind(10);
+    pub const FROM: FieldKind = FieldKind(11);
+    pub const FUNCTION: FieldKind = FieldKind(12);
+    pub const IMPORT_NAME: FieldKind = FieldKind(13);
+    pub const INDEX: FieldKind = FieldKind(14);
+    // pub const INITIAL: FieldKind = FieldKind(15);
+    // pub const KEY_IDENTIFIER: FieldKind = FieldKind(16);
+    // pub const KEY_TYPE: FieldKind = FieldKind(17);
+    // pub const LEFT: FieldKind = FieldKind(18);
+    pub const LOCATION: FieldKind = FieldKind(19);
+    pub const NAME: FieldKind = FieldKind(20);
+    // pub const OBJECT: FieldKind = FieldKind(21);
+    // pub const OPERATOR: FieldKind = FieldKind(22);
+    pub const PARAMETERS: FieldKind = FieldKind(23);
+   // pub const PROPERTY: FieldKind = FieldKind(24);
+    pub const RETURN_TYPE: FieldKind = FieldKind(25);
+    // pub const RIGHT: FieldKind = FieldKind(26);
+    pub const SOURCE: FieldKind = FieldKind(27);
+    pub const TO: FieldKind = FieldKind(28);
+    pub const TYPE: FieldKind = FieldKind(29);
+    // pub const UPDATE: FieldKind = FieldKind(30);
+    pub const VALUE: FieldKind = FieldKind(31);
+    pub const VALUE_IDENTIFIER: FieldKind = FieldKind(32);
+    pub const VALUE_TYPE: FieldKind = FieldKind(33);
+    pub const VERSION_CONSTRAINT: FieldKind = FieldKind(34);
+    pub const VISIBILITY: FieldKind = FieldKind(35);
+
+    /*
+    field="alias",              parent_count=1, parents=import_directive
+    field="ancestor",           parent_count=1, parents=inheritance_specifier
+    field="ancestor_arguments", parent_count=1, parents=inheritance_specifier
+    field="argument",           parent_count=2, parents=unary_expression, update_expression
+    field="attempt",            parent_count=1, parents=try_statement
+    field="base",               parent_count=2, parents=array_access, slice_access
+    field="body",               parent_count=15, parents=catch_clause, constructor_definition, contract_declaration, do_while_statement, enum_declaration, fallback_receive_definition, for_statement, function_definition, if_statement, interface_declaration, library_declaration, modifier_definition, struct_declaration, try_statement, while_statement
+    field="condition",          parent_count=4, parents=do_while_statement, for_statement, if_statement, while_statement
+    field="else",               parent_count=1, parents=if_statement
+    field="error",              parent_count=1, parents=revert_statement
+    field="from",               parent_count=1, parents=slice_access
+    field="function",           parent_count=2, parents=call_expression, yul_function_call
+    field="import_name",        parent_count=1, parents=import_directive
+    field="index",              parent_count=1, parents=array_access
+    field="initial",            parent_count=1, parents=for_statement
+    field="key_identifier",     parent_count=1, parents=type_name
+    field="key_type",           parent_count=1, parents=type_name
+    field="left",               parent_count=4, parents=assignment_expression, augmented_assignment_expression, binary_expression, yul_variable_declaration
+    field="location",           parent_count=4, parents=parameter, return_parameter, state_variable_declaration, variable_declaration
+    field="name",               parent_count=21, parents=call_struct_argument, constant_variable_declaration, contract_declaration, emit_statement, enum_declaration, error_declaration, error_parameter, event_definition, event_parameter, function_definition, interface_declaration, library_declaration, modifier_definition, new_expression, parameter, state_variable_declaration, struct_declaration, struct_field_assignment, struct_member, user_defined_type_definition, variable_declaration
+    field="object",             parent_count=1, parents=member_expression
+    field="operator",           parent_count=3, parents=binary_expression, unary_expression, update_expression
+    field="parameters",         parent_count=1, parents=type_name
+    field="property",           parent_count=1, parents=member_expression
+    field="return_type",        parent_count=1, parents=function_definition
+    field="right",              parent_count=4, parents=assignment_expression, augmented_assignment_expression, binary_expression, yul_variable_declaration
+    field="source",             parent_count=2, parents=import_directive, using_directive
+    field="to",                 parent_count=1, parents=slice_access
+    field="type",               parent_count=9, parents=constant_variable_declaration, error_parameter, event_parameter, parameter, return_parameter, state_variable_declaration, struct_expression, struct_member, variable_declaration
+    field="update",             parent_count=1, parents=for_statement
+    field="value",              parent_count=5, parents=call_struct_argument, constant_variable_declaration, state_variable_declaration, struct_field_assignment, variable_declaration_statement
+    field="value_identifier",   parent_count=1, parents=type_name
+    field="value_type",         parent_count=1, parents=type_name
+    field="version_constraint", parent_count=1, parents=solidity_pragma_token
+    field="visibility",         parent_count=1, parents=state_variable_declaration
+        */
+}
