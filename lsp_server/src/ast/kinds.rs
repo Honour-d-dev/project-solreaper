@@ -32,10 +32,9 @@ impl PartialEq<NodeKind> for u16 {
 }
 
 
-pub mod node_kind {
-    use super::NodeKind;
-
-    // Thin wrapper around TS node kind IDs, mostly named nodes
+impl NodeKind {
+    // Thin wrapper around TS node kind IDs,
+    //          named nodes
     pub const IDENTIFIER: NodeKind = NodeKind(1);
     pub const COMMENT: NodeKind = NodeKind(328);
     pub const SOURCE_FILE: NodeKind = NodeKind(329);
@@ -61,6 +60,7 @@ pub mod node_kind {
     pub const EVENT_PARAMETER: NodeKind = NodeKind(367);
     pub const STATE_VAR_DECLARATION: NodeKind = NodeKind(412);
     pub const VAR_DECLARATION: NodeKind = NodeKind(398);
+    pub const CONST_VAR_DECLARATION: NodeKind = NodeKind(349);
 
     pub const STATEMENT: NodeKind = NodeKind(372);
     pub const VAR_DECLARATION_STATEMENT: NodeKind = NodeKind(397);
@@ -73,6 +73,11 @@ pub mod node_kind {
     pub const TYPE_NAME: NodeKind = NodeKind(448);
     pub const PRIMITIVE_TYPE: NodeKind = NodeKind(460);
     pub const USER_DEFINED_TYPE: NodeKind = NodeKind(456);
+
+
+
+//     UN-NAMED NODES
+    pub const AS: NodeKind = NodeKind(21);
     // ...
 }
 
@@ -112,9 +117,7 @@ impl PartialEq<FieldKind> for u16 {
     }
 }
 
-pub mod field_kind {
-    use super::FieldKind;
-
+impl FieldKind {
     // Thin wrapper around TS field IDs from `enum ts_field_identifiers`
     pub const ALIAS: FieldKind = FieldKind(1);
     // pub const ANCESTOR: FieldKind = FieldKind(2);
