@@ -140,7 +140,6 @@ pub fn is_supported_node(node: &Node<'_>) -> bool {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct AstIdMap {
-    ptr: Vec<NodePtr>,
     ptr_to_id: FxHashMap<NodePtr, ErasedFileAstId>,
     id_to_ptr: FxHashMap<ErasedFileAstId, NodePtr>,
 }
@@ -154,7 +153,7 @@ impl AstIdMap {
         // Global layer: consts, free fns, contracts/interface/library etc.
         // 2nd layer: contract/interface/library members
         // everything below function level is ignored
-        let mut ptr = Vec::new();
+        let mut ptr_id = 0;
         let mut ptr_to_id = FxHashMap::default();
         let mut id_to_ptr = FxHashMap::default();
         let mut queue = VecDeque::new();
@@ -164,8 +163,8 @@ impl AstIdMap {
 
         while let Some((node, parent)) = queue.pop_front() {
             let node_ptr = NodePtr::from_raw_node(node);
-            let id = Self::generate_id(parent, ptr.len(), &mut parent_map);
-            ptr.push(node_ptr);
+            let id = Self::generate_id(parent, ptr_id, &mut parent_map);
+            ptr_id += 1;
             ptr_to_id.insert(node_ptr, id);
             id_to_ptr.insert(id, node_ptr);
 
@@ -176,11 +175,10 @@ impl AstIdMap {
             }
         }
 
-        Self { ptr, ptr_to_id, id_to_ptr }.shrink_to_fit()
+        Self { ptr_to_id, id_to_ptr }.shrink_to_fit()
     }
 
     fn shrink_to_fit(mut self) -> Self {
-        self.ptr.shrink_to_fit();
         self.ptr_to_id.shrink_to_fit();
         self.id_to_ptr.shrink_to_fit();
         self
@@ -230,14 +228,14 @@ impl AstIdMap {
 ///                NODEPTR
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PtrRange {
-    pub start: usize,//TODO: use u32
-    pub end: usize
+    pub start: u32,
+    pub end: u32,
 }
 
 impl PtrRange {
     #[inline]
     pub fn from_range(range: Range) -> Self {
-        Self { start: range.start_byte, end: range.end_byte }
+        Self { start: range.start_byte as u32, end: range.end_byte as u32 }
     }
 
     #[inline]
@@ -246,6 +244,9 @@ impl PtrRange {
     }
 }
 
+
+/// A light-weight repr of a node with kind info
+/// Used to index nodes in the ast_id_map
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodePtr {
     kind: NodeKind,
@@ -266,4 +267,6 @@ impl NodePtr {
     pub fn to_node(&self, root: &AstNode) -> Option<AstNode> {
         root.child_node(self.range).filter(|a| a.node().kind_id() == self.kind)
     }
+
+    //Note: we can also go from ptr to typed ast::item
 }
