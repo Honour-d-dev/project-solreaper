@@ -39,25 +39,26 @@ use crate::
 /// 
 
 type ByteRange = std::ops::Range<usize>;
+type AstInner = Rc<Inner>;
 
 #[derive(Debug, Clone)]
-pub struct AstInner {
+pub struct Inner {
     tree: Tree,
     source: Arc<str>,
 }
 
-impl PartialEq for AstInner {
+impl PartialEq for Inner {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source
     }
 }
 
-impl Eq for AstInner {}
+impl Eq for Inner {}
 
 
 #[derive(Debug, Clone)]
 pub struct Ast {
-    inner: AstInner
+    inner: Inner//Ast needs to be thread-safe for salsa, so no RC
 }
 
 impl PartialEq for Ast {
@@ -70,7 +71,7 @@ impl Eq for Ast {}
 
 impl Ast {
     pub fn new(tree: Tree, source: Arc<str>) -> Self {
-        Self { inner: AstInner { tree, source } }
+        Self { inner: Inner { tree, source } }
     }
     
     pub fn tree(&self) -> &Tree {
@@ -84,19 +85,19 @@ impl Ast {
     pub fn root(&self) -> AstNode {
         AstNode {
             node: self.tree().root_node().into_raw(),
-            inner: self.inner.clone(),
+            inner: Rc::new(self.inner.clone()),
         }
     }
 
      pub fn make_ast(&self, node: Node<'_>) -> AstNode {
-        AstNode::new(node.into_raw(), self.inner.clone())
+        AstNode::new(node.into_raw(), Rc::new(self.inner.clone()))
     }
 
     pub fn node(&self, range: PtrRange) -> Option<AstNode> {
         self.tree()
             .root_node()
-            .descendant_for_byte_range(range.start, range.end)
-            .map(|node| AstNode::new(node.into_raw(), self.inner.clone()))
+            .descendant_for_byte_range(range.start as usize, range.end as usize)
+            .map(|node| AstNode::new(node.into_raw(), Rc::new(self.inner.clone())))
     }
 
 }
@@ -153,7 +154,7 @@ impl AstNode {
     }
 
     pub fn child_node(&self, range: PtrRange) -> Option<AstNode> {
-        self.node().descendant_for_byte_range(range.start, range.end)
+        self.node().descendant_for_byte_range(range.start as usize, range.end as usize)
             .map(|node| AstNode::new(node.into_raw(), self.inner.clone()))
     }
 
