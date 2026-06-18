@@ -42,7 +42,10 @@ impl Contract {
 
     pub fn members(&self) -> Box<[Item]> {
         let mut members = Vec::new();
-        for node in self.raw.node().children(&mut self.raw.node().walk()) {
+        let Some(body) = self.raw.node().child_by_field_id(FieldKind::BODY.into()) else {
+            return members.into();
+        };
+        for node in body.children(&mut self.raw.node().walk()) {
             match NodeKind::from(node.kind_id()) {
                 NodeKind::FUNCTION_DEFINITION => {
                     if let Some(func) = Function::cast(self.raw.make_ast(node)) {
@@ -111,6 +114,70 @@ pub struct Interface {
     raw: AstNode,
 }
 
+impl Interface {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
+
+    pub fn bases(&self) -> Box<[SmolStr]> {
+        self.raw.node()
+        .named_children(&mut self.raw.node().walk())
+        .filter(|n| n.kind_id() == NodeKind::INHERITANCE_SPECIFIER)
+        .filter_map(|inheritance| {
+            inheritance.named_children(&mut inheritance.walk())
+                .find(|base| base.kind_id() == NodeKind::USER_DEFINED_TYPE)
+                .map(|base| SmolStr::new(self.raw.text_by_range(base.byte_range())))
+        })
+        .collect::<Box<_>>()
+    }
+
+    pub fn members(&self) -> Box<[Item]> {
+        let mut members = Vec::new();
+        let Some(body) = self.raw.node().child_by_field_id(FieldKind::BODY.into()) else {
+            return members.into();
+        };
+        for node in body.children(&mut self.raw.node().walk()) {
+            match NodeKind::from(node.kind_id()) {
+                NodeKind::FUNCTION_DEFINITION => {
+                    if let Some(func) = Function::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Function(func));
+                    }
+                }
+                NodeKind::EVENT_DEFINITION => {
+                    if let Some(event) = Event::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Event(event));
+                    }
+                }
+                NodeKind::STRUCT_DEFINITION => {
+                    if let Some(strukt) = Struct::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Struct(strukt));
+                    }
+                }
+                NodeKind::ERROR_DEFINITION => {
+                    if let Some(error) = Error::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Error(error));
+                    }
+                }
+                NodeKind::MODIFIER_DEFINITION => {
+                    if let Some(modifier) = Modifier::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Modifier(modifier));
+                    }
+                }
+                NodeKind::STATE_VAR_DECLARATION => {
+                    if let Some(var) = Var::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Var(var));
+                    }
+                }
+                _ => {}
+            }
+        }
+        members.into_boxed_slice()
+    }
+}
+
 impl ToAstNode for Interface {
     fn ast_node(self) -> AstNode {
         self.raw
@@ -137,6 +204,59 @@ impl ToAstNode for Interface {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Library {
     raw: AstNode,
+}
+
+impl Library {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
+
+
+    pub fn members(&self) -> Box<[Item]> {
+        let mut members = Vec::new();
+        let Some(body) = self.raw.node().child_by_field_id(FieldKind::BODY.into()) else {
+            return members.into();
+        };
+        for node in body.children(&mut self.raw.node().walk()) {
+            match NodeKind::from(node.kind_id()) {
+                NodeKind::FUNCTION_DEFINITION => {
+                    if let Some(func) = Function::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Function(func));
+                    }
+                }
+                NodeKind::EVENT_DEFINITION => {
+                    if let Some(event) = Event::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Event(event));
+                    }
+                }
+                NodeKind::STRUCT_DEFINITION => {
+                    if let Some(strukt) = Struct::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Struct(strukt));
+                    }
+                }
+                NodeKind::ERROR_DEFINITION => {
+                    if let Some(error) = Error::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Error(error));
+                    }
+                }
+                NodeKind::MODIFIER_DEFINITION => {
+                    if let Some(modifier) = Modifier::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Modifier(modifier));
+                    }
+                }
+                NodeKind::STATE_VAR_DECLARATION => {
+                    if let Some(var) = Var::cast(self.raw.make_ast(node)) {
+                        members.push(Item::Var(var));
+                    }
+                }
+                _ => {}
+            }
+        }
+        members.into_boxed_slice()
+    }
 }
 
 impl ToAstNode for Library {
@@ -167,6 +287,15 @@ pub struct Struct {
     raw: AstNode,
 }
 
+impl Struct {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
+}
+
 impl ToAstNode for Struct {
     fn ast_node(self) -> AstNode {
         self.raw
@@ -193,6 +322,15 @@ impl ToAstNode for Struct {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Enum {
     raw: AstNode,
+}
+
+impl Enum {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
 }
 
 impl ToAstNode for Enum {
@@ -223,6 +361,15 @@ pub struct Function {
     raw: AstNode,
 }
 
+impl Function {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
+}
+
 impl ToAstNode for Function {
     fn ast_node(self) -> AstNode {
         self.raw
@@ -249,6 +396,15 @@ impl ToAstNode for Function {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Var {//Single wrapper for multiple var types
     raw: AstNode,
+}
+
+impl Var {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
 }
 
 impl ToAstNode for Var {
@@ -279,6 +435,15 @@ pub struct Event {
     raw: AstNode,
 }
 
+impl Event {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
+}
+
 impl ToAstNode for Event {
     fn ast_node(self) -> AstNode {
         self.raw
@@ -305,6 +470,15 @@ impl ToAstNode for Event {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     raw: AstNode,
+}
+
+impl Error {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
 }
 
 impl ToAstNode for Error {
@@ -335,6 +509,15 @@ pub struct Modifier {
     raw: AstNode,
 }
 
+
+impl Modifier {
+    #[inline]
+    pub fn name(&self) -> Option<SmolStr> {
+        self.raw.node()
+            .child_by_field_id(FieldKind::NAME.into())
+            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+    }
+}
 
 impl ToAstNode for Modifier {
     fn ast_node(self) -> AstNode {
