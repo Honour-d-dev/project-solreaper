@@ -1,5 +1,5 @@
 #![allow(unused)]
-use std::collections::VecDeque;
+use std::{collections::VecDeque, hash::{Hash, Hasher}};
 use std::marker::PhantomData;
 use rustc_hash::FxHashMap;
 use tree_sitter::{Node, Range};
@@ -22,7 +22,7 @@ pub struct ErasedFileAstId {
  
 
 /// Zero-cost file-local index with type info
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct FileAstId<N> {
     raw: ErasedFileAstId,
     _ty: PhantomData<fn() -> N>,
@@ -37,6 +37,11 @@ impl<N> Clone for FileAstId<N> {
 
 impl<N> Copy for FileAstId<N> {}
 
+impl<N> Hash for FileAstId<N> {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.raw.hash(hasher);
+    }
+}
 
 impl<N> FileAstId<N> {
     pub fn erase(self) -> ErasedFileAstId { self.raw }
@@ -55,6 +60,7 @@ impl<N> FileAstId<N> {
 /// either this or we can_cast 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemId {
+    SourceFile(FileAstId<ast::SourceFile>),
     Import(FileAstId<ast::Import>),
     Contract(FileAstId<ast::Contract>),
     Interface(FileAstId<ast::Interface>),
@@ -71,6 +77,7 @@ pub enum ItemId {
 impl ItemId {
     pub fn upcast(self) -> FileAstId<ast::Item> {
         match self {
+            ItemId::SourceFile(id) => id.upcast(),
             ItemId::Import(id) => id.upcast(),
             ItemId::Contract(id) => id.upcast(),
             ItemId::Interface(id) => id.upcast(),
@@ -87,6 +94,7 @@ impl ItemId {
 
     pub fn erase(self) -> ErasedFileAstId {
         match self {
+            ItemId::SourceFile(id) => id.erase(),
             ItemId::Import(id) => id.erase(),
             ItemId::Contract(id) => id.erase(),
             ItemId::Interface(id) => id.erase(),
@@ -103,10 +111,17 @@ impl ItemId {
 }
 
 /// Unique global index for node
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq)]
 pub struct AstId<N> {
     pub file_id: FileId,//salsa file id
     pub local_id: FileAstId<N>,
+}
+
+impl<N> Hash for AstId<N> {
+    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+        self.file_id.hash(hasher);
+        self.local_id.hash(hasher);
+    }
 }
 
 impl<N> Clone for AstId<N> {

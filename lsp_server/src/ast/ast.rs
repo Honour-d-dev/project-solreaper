@@ -18,7 +18,8 @@
 /// - linearized base contracts
 /// - file/import globals
 
-use std::{collections::VecDeque, marker::PhantomData, rc::Rc, sync::Arc};
+use std::{collections::VecDeque, marker::PhantomData, rc::Rc};
+use triomphe::Arc;
 
 use camino::Utf8PathBuf;
 use rustc_hash::FxHashMap;

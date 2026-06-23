@@ -15,6 +15,34 @@ use crate::{
 ////////////////////////////////////////////////////
 ///              CONTRACT                       ///
 //////////////////////////////////////////////////
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFile {
+    raw: AstNode
+}
+
+impl ToAstNode for SourceFile {
+    fn ast_node(self) -> AstNode {
+        self.raw
+    }
+
+    fn ast_node_ref(&self) -> &AstNode {
+        &self.raw
+    }
+    
+    fn cast(node: AstNode) -> Option<Self> {
+        if node.node().kind_id() == NodeKind::SOURCE_FILE {
+            Some(Self { raw: node })
+        } else {
+            None
+        }
+    }
+
+    fn can_cast(node: &Node) -> bool {
+        node.kind_id() == NodeKind::SOURCE_FILE
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contract {
     raw: AstNode,
@@ -546,21 +574,22 @@ impl ToAstNode for Modifier {
 ///            IMPORT                           ///
 //////////////////////////////////////////////////
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug,Default, Clone, PartialEq, Eq)]
 pub(crate) enum ImportType {
+    #[default]
     Full,//can i use full for namespace? namespace is just full with an alias
     Named {
         symbols: Vec<ImportItem>,
     },
     Namespace {
-        alias: String
+        alias: SmolStr
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImportItem {
-    pub name: String,
-    pub alias: Option<String>,
+    pub name: SmolStr,
+    pub alias: Option<SmolStr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -572,19 +601,19 @@ impl Import {
     pub fn import_type(&self) -> ImportType {
         let mut symbols: Vec<ImportItem> = Vec::new();
         let mut is_alias = false;
-        let mut alias = String::new();
-        let mut name = String::new();
+        let mut alias = SmolStr::default();
+        let mut name = SmolStr::default();
         for node in self.raw.node().children(&mut self.raw.node().walk()) {
             if node.kind_id() == NodeKind::IDENTIFIER {
                 if is_alias {
-                    alias = self.raw.text_by_range(node.byte_range()).to_string();
+                    alias = self.raw.text_by_range(node.byte_range()).into();
                     if !symbols.is_empty() {
                         symbols.last_mut().unwrap().alias = Some(alias.clone());
                     }
                     //consume alias flag
                     is_alias = false;
                 } else {
-                    name = self.raw.text_by_range(node.byte_range()).to_string();
+                    name = self.raw.text_by_range(node.byte_range()).into();
                     symbols.push(ImportItem { name: name.clone(), alias: None });
                 }
             }
@@ -606,7 +635,7 @@ impl Import {
     }
     #[inline]
     pub fn path(&self) -> &str {
-        self.raw.node().child_by_field_id(FieldKind::SOURCE.into()).map(|p| self.raw.text_by_range(p.byte_range())).unwrap_or("")
+        self.raw.node().child_by_field_id(FieldKind::SOURCE.into()).map(|p| self.raw.text_by_range(p.byte_range())).unwrap_or("").trim_matches(['"', '\''])
     }
 }
 
@@ -638,6 +667,7 @@ impl ToAstNode for Import {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
+    SourceFile(SourceFile),
     Contract(Contract),
     Interface(Interface),
     Library(Library),
@@ -654,6 +684,7 @@ pub enum Item {
 impl ToAstNode for Item {
     fn ast_node(self) -> AstNode {
         match self {
+            Item::SourceFile(s) => s.ast_node(),
             Item::Contract(c) => c.ast_node(),
             Item::Interface(i) => i.ast_node(),
             Item::Library(l) => l.ast_node(),
@@ -670,6 +701,7 @@ impl ToAstNode for Item {
 
     fn ast_node_ref(&self) -> &AstNode {
         match self {
+            Item::SourceFile(s) => s.ast_node_ref(),
             Item::Contract(c) => c.ast_node_ref(),
             Item::Interface(i) => i.ast_node_ref(),
             Item::Library(l) => l.ast_node_ref(),
@@ -686,6 +718,7 @@ impl ToAstNode for Item {
 
     fn cast(node: AstNode) -> Option<Self> {
         match NodeKind::from(node.node().kind_id()) {
+            NodeKind::SOURCE_FILE => Some(Self::SourceFile(SourceFile::cast(node).unwrap())),
             NodeKind::CONTRACT_DEFINITION => Some(Self::Contract(Contract::cast(node).unwrap())),
             NodeKind::INTERFACE_DEFINITION => Some(Self::Interface(Interface::cast(node).unwrap())),
             NodeKind::LIBRARY_DEFINITION => Some(Self::Library(Library::cast(node).unwrap())),
@@ -704,7 +737,8 @@ impl ToAstNode for Item {
     fn can_cast(node: &Node) -> bool {
         matches!(
             NodeKind::from(node.kind_id()),
-            NodeKind::CONTRACT_DEFINITION
+                NodeKind::SOURCE_FILE
+                | NodeKind::CONTRACT_DEFINITION
                 | NodeKind::INTERFACE_DEFINITION
                 | NodeKind::LIBRARY_DEFINITION
                 | NodeKind::STRUCT_DEFINITION
