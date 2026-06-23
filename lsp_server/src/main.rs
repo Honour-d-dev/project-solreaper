@@ -2,10 +2,11 @@ mod utilities;
 mod lsp;
 mod cursor;
 mod salsa_db;
-mod lowering;
-mod editor;
 mod workspace;
 mod loader;
+mod ast;
+mod item_tree;
+mod def_map;
 
 
 use lsp::SolidityLspServer;
@@ -50,9 +51,7 @@ fn main() -> anyhow::Result<()> {
         .initialize(serde_json::to_value(server_capabilities)?)
         .context("failed to complete LSP initialize handshake")?;
 
-    let (loader_tx, loader_rx) = loader::create_loader();
-
-    SolidityLspServer::new( client_capabilities, connection.sender, loader_tx)?.run(connection.receiver, loader_rx)?;
+    SolidityLspServer::new(client_capabilities, connection.sender)?.run(connection.receiver)?;
     //realized we only need receiver for the event loop so no need to attach it to entire object. prevents borrow issues
 
     io_threads.join().context("failed to join LSP IO threads")?;

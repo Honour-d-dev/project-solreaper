@@ -1,70 +1,133 @@
-use std::collections::HashMap;
+use camino::Utf8PathBuf;
+use crossbeam_channel::{Receiver, Sender};
 
-use camino::{Utf8Path, Utf8PathBuf};
-use crossbeam_channel::Sender;
-use tree_sitter::Parser;
+use crate::workspace::{
+    discover_workspace, DiscoveredSourceRoot, PackageId, SourceRootId, Workspace,
+};
 
-use crate::lowering::{lower, File};
-use crate::workspace::{Remapping, Workspace};
-
-pub(crate) fn create_loader() -> (Sender<LoadMsg>, crossbeam_channel::Receiver<LoadMsg>) {
+pub(crate) fn create_loader() -> (Sender<LoadMsg>, Receiver<LoadMsg>) {
     crossbeam_channel::bounded::<LoadMsg>(100)
 }
 
 pub(crate) enum LoadMsg {
-    /// A fully parsed + lowered file, ready to drop into editor/db.
-    File {
-        lowered: File,
+    Workspace {
+        workspace: Workspace,
+    },
+
+    SourceRootBundle {
+        bundle: SourceRootBundle,
     },
     Finished,
 }
 
-pub(crate) fn load(workspace: &Workspace, tx: Sender<LoadMsg>) {
-    // Build a map from file path -> (project_root, remappings) so the thread
-    // can resolve imports correctly without borrowing the workspace.
-    let mut file_remaps: HashMap<Utf8PathBuf, (Utf8PathBuf, Vec<Remapping>)> = HashMap::new();
-    for project in &workspace.projects {
-        for file in &project.files {
-            file_remaps.insert(
-                file.clone(),
-                (project.root.clone(), project.remappings.clone()),
-            );
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedFile {
+    pub path: Utf8PathBuf,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SourceRootBundle {
+    pub source_root_id: SourceRootId,
+    pub package_id: PackageId,
+    pub is_dependency: bool,
+    pub files: Vec<LoadedFile>,
+}
+
+struct Loader {
+    root: Utf8PathBuf,
+    tx: Sender<LoadMsg>,
+    workspace: Workspace,
+    source_roots: Vec<DiscoveredSourceRoot>,
+}
+
+impl Loader {
+    fn new(root: Utf8PathBuf, tx: Sender<LoadMsg>) -> Self {
+        Self {
+            workspace: Workspace::empty(root.clone()),
+            root,
+            tx,
+            source_roots: Vec::new(),
         }
     }
 
-    let files: Vec<Utf8PathBuf> = workspace
-        .projects
-        .iter()
-        .flat_map(|p| p.files.iter().cloned())
-        .collect();
+    fn discover(&mut self) {
+        let discovered = discover_workspace(&self.root);
+        self.workspace = discovered.workspace;
+        self.source_roots = discovered.source_roots;
+    }
 
-    std::thread::spawn(move || {
-        let mut parser = Parser::new();
-        let _ = parser
-            .set_language(&tree_sitter_solidity::LANGUAGE.into());
+    fn send_workspace(&self) -> bool {
+        self.tx
+            .send(LoadMsg::Workspace {
+                workspace: self.workspace.clone(),
+            })
+            .is_ok()
+    }
 
-        for path in files {
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(tree) = parser.parse(&text, None) else {
-                continue;
-            };
+    fn send_source_root_bundles(&self) -> bool {
+        for source_root in &self.source_roots/*par_iter*/ {
+            let mut files = Vec::new();
+            for path in &source_root.files {
+                let Ok(text) = std::fs::read_to_string(path.as_std_path()) else {
+                    continue;
+                };
 
-            let (project_root, remappings) = file_remaps
-                .get(&path)
-                .map(|(r, m)| (r.as_path(), m.as_slice()))
-                .unwrap_or((Utf8Path::new(""), &[]));
+                files.push(LoadedFile {
+                    path: path.clone(),
+                    text,
+                });
+            }
 
-            let lowered = lower(&path, &text, &tree, project_root, remappings);
-
-            if tx.send(LoadMsg::File { lowered }).is_err() {
-                return;
+            if self
+                .tx
+                .send(LoadMsg::SourceRootBundle {
+                    bundle: SourceRootBundle {
+                        source_root_id: source_root.id,
+                        package_id: source_root.package_id,
+                        is_dependency: source_root.is_dependency,
+                        files,
+                    },
+                })
+                .is_err()
+            {
+                return false;
             }
         }
+        true
+    }
 
-        let _ = tx.send(LoadMsg::Finished);
-    });
+    fn run(mut self) {
+        self.discover();
+        if !self.send_workspace() {
+            return;
+        }
+        if !self.send_source_root_bundles() {
+            return;
+        }
+        let _ = self.tx.send(LoadMsg::Finished);
+    }
+}
+
+pub(crate) fn load(root: Utf8PathBuf, tx: Sender<LoadMsg>) {
+    std::thread::spawn(move || Loader::new(root, tx).run());
+}
+
+pub fn load_workspace(root: Utf8PathBuf) -> (Workspace, Vec<SourceRootBundle>) {
+    let (tx, rx) = create_loader();
+    load(root, tx);
+
+    let mut workspace = None;
+    let mut bundles = Vec::new();
+    for msg in rx {
+        match msg {
+            LoadMsg::Workspace { workspace: w } => workspace = Some(w),
+            LoadMsg::SourceRootBundle { bundle } => bundles.push(bundle),
+            LoadMsg::Finished => break,
+        }
+    }
+
+    (workspace.unwrap(), bundles)
 }
 
 

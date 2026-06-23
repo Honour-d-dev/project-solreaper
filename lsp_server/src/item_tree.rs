@@ -1,5 +1,5 @@
 #![allow(unused)]
-use std::sync::Arc;
+use triomphe::Arc;
 
 use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
@@ -11,7 +11,7 @@ use crate::{
             FieldKind, NodeKind
         }, match_ast
     },
-    salsa_db::{FileText, RootAstDatabase},
+    salsa_db::{File, RootDatabase},
 };
 
 fn field_text(node: Node<'_>, field_id: u16, source: &str) -> Option<SmolStr> {
@@ -24,6 +24,7 @@ fn field_text(node: Node<'_>, field_id: u16, source: &str) -> Option<SmolStr> {
 /// Blanket type for all item_tree::node types
 #[derive(Debug, PartialEq, Eq)]
 pub enum Item {
+    SourceFile(SourceFile),
     Import(Import),
     Contract(Contract),
     Interface(Interface),
@@ -40,7 +41,7 @@ pub enum Item {
 
 /// ItemTree::Lowerer
 pub struct Lowerer<'db> {
-    db: &'db dyn RootAstDatabase,
+    db: &'db dyn RootDatabase,
     ast: Arc<Ast>,
     ast_id_map: Arc<AstIdMap>,
     top_level: Vec<ItemId>,
@@ -48,7 +49,7 @@ pub struct Lowerer<'db> {
 }
 
 impl<'db> Lowerer<'db> {
-    pub fn lower(db: &dyn RootAstDatabase, file: FileText) -> ItemTree {
+    pub fn lower(db: &dyn RootDatabase, file: File) -> ItemTree {
         let mut lowerer = Lowerer {
             db,
             ast: db.parse(file),
@@ -65,13 +66,17 @@ impl<'db> Lowerer<'db> {
 
     fn lower_top(&mut self) {
         let root = self.ast.root();
+        let source_file = ast::SourceFile::cast(root.clone()).unwrap();
+        let source_file_id = self.ast_id_map.id_of(&source_file).unwrap();
+        self.top_level.push(ItemId::SourceFile(source_file_id));
+        self.data.insert(source_file_id.erase(), Item::SourceFile(SourceFile));
         
         for node in root.node().named_children(&mut root.node().walk()) {
             match ast::Item::cast(root.make_ast(node)) {
                 Some(ast::Item::Import(i)) => {
                     let Some(id) = self.ast_id_map.id_of(&i) else {continue;};
                     let import = Import {
-                        path: i.path().to_string(),
+                        path: i.path().into(),
                         import_type: i.import_type(),
                     };
                     self.data.insert(id.erase(), Item::Import(import));
@@ -270,63 +275,67 @@ impl ItemTree {
 ///                             Item_tree::Nodes                                 ///
 /// ////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug, PartialEq, Eq)]
+
+#[derive(Debug,Clone, PartialEq, Eq)]
+pub struct SourceFile;
+
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Import {
-    pub path: String,
+    pub path: SmolStr,//tecnically not a small str but just to capitalize on the cheap clones
     pub import_type: ImportType,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Contract {
     pub name: SmolStr,
     pub bases: Box<[SmolStr]>,       // unresolved base names in v1
     pub visible_members: Box<[ItemId]>, // we don't filter by visibity yet, this is misleading
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Interface {
     pub name: SmolStr,
     pub bases: Box<[SmolStr]>,
     pub visible_members: Box<[ItemId]>,// we don't filter by visibity yet, this is misleading
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Library {
     pub name: SmolStr,
     pub visible_members: Box<[ItemId]>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Function {
     pub name: SmolStr,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Var {
     pub name: SmolStr,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Struct {
     pub name: SmolStr,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Enum {
     pub name: SmolStr,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Event {
     pub name: SmolStr,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Error {
     pub name: SmolStr,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Modifier {
     pub name: SmolStr,
 }
