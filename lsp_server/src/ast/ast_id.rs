@@ -1,4 +1,4 @@
-#![allow(unused)]
+
 use std::{collections::VecDeque, hash::{Hash, Hasher}};
 use std::marker::PhantomData;
 use rustc_hash::FxHashMap;
@@ -15,7 +15,7 @@ use crate::{
 
 /// file-local node index wrapper
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ErasedFileAstId { 
+pub struct ErasedAstId { 
     id: u32,
     parent: Option<u32>,
 }
@@ -23,33 +23,33 @@ pub struct ErasedFileAstId {
 
 /// Zero-cost file-local index with type info
 #[derive(Debug, PartialEq, Eq)]
-pub struct FileAstId<N> {
-    raw: ErasedFileAstId,
+pub struct AstId<N> {
+    raw: ErasedAstId,
     _ty: PhantomData<fn() -> N>,
 }
 
 //manual impls to avoid N: clone/copy bound on derived version
-impl<N> Clone for FileAstId<N> {
+impl<N> Clone for AstId<N> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<N> Copy for FileAstId<N> {}
+impl<N> Copy for AstId<N> {}
 
-impl<N> Hash for FileAstId<N> {
+impl<N> Hash for AstId<N> {
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         self.raw.hash(hasher);
     }
 }
 
-impl<N> FileAstId<N> {
-    pub fn erase(self) -> ErasedFileAstId { self.raw }
-    pub fn from_erased(raw: ErasedFileAstId) -> Self {
+impl<N> AstId<N> {
+    pub fn erase(self) -> ErasedAstId { self.raw }
+    pub fn from_erased(raw: ErasedAstId) -> Self {
         Self { raw, _ty: PhantomData }
     }
-    pub fn upcast<M: ToAstNode>(self) -> FileAstId<M> {
-        FileAstId::from_erased(self.raw)
+    pub fn upcast<M: ToAstNode>(self) -> AstId<M> {
+        AstId::from_erased(self.raw)
     }
 }
 
@@ -58,77 +58,85 @@ impl<N> FileAstId<N> {
 /// similar to ast::Item, but on the id level.
 /// ErasedFileAstId -> FileAstId -> ItemId
 /// either this or we can_cast 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemId {
-    SourceFile(FileAstId<ast::SourceFile>),
-    Import(FileAstId<ast::Import>),
-    Contract(FileAstId<ast::Contract>),
-    Interface(FileAstId<ast::Interface>),
-    Library(FileAstId<ast::Library>),
-    Function(FileAstId<ast::Function>),
-    Var(FileAstId<ast::Var>),
-    Struct(FileAstId<ast::Struct>),
-    Enum(FileAstId<ast::Enum>),
-    Event(FileAstId<ast::Event>),
-    Error(FileAstId<ast::Error>),
-    Modifier(FileAstId<ast::Modifier>),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemAstId {
+    SourceFile(AstId<ast::SourceFile>),
+    Import(AstId<ast::Import>),
+    Contract(AstId<ast::Contract>),
+    Interface(AstId<ast::Interface>),
+    Library(AstId<ast::Library>),
+    Function(AstId<ast::Function>),
+    Var(AstId<ast::Var>),
+    Struct(AstId<ast::Struct>),
+    Enum(AstId<ast::Enum>),
+    Event(AstId<ast::Event>),
+    Error(AstId<ast::Error>),
+    Modifier(AstId<ast::Modifier>),
 }
 
-impl ItemId {
-    pub fn upcast(self) -> FileAstId<ast::Item> {
+impl ItemAstId {
+    pub fn upcast(self) -> AstId<ast::Item> {
         match self {
-            ItemId::SourceFile(id) => id.upcast(),
-            ItemId::Import(id) => id.upcast(),
-            ItemId::Contract(id) => id.upcast(),
-            ItemId::Interface(id) => id.upcast(),
-            ItemId::Library(id) => id.upcast(),
-            ItemId::Function(id) => id.upcast(),
-            ItemId::Var(id) => id.upcast(),
-            ItemId::Struct(id) => id.upcast(),
-            ItemId::Enum(id) => id.upcast(),
-            ItemId::Event(id) => id.upcast(),
-            ItemId::Error(id) => id.upcast(),
-            ItemId::Modifier(id) => id.upcast(),
+            ItemAstId::SourceFile(id) => id.upcast(),
+            ItemAstId::Import(id) => id.upcast(),
+            ItemAstId::Contract(id) => id.upcast(),
+            ItemAstId::Interface(id) => id.upcast(),
+            ItemAstId::Library(id) => id.upcast(),
+            ItemAstId::Function(id) => id.upcast(),
+            ItemAstId::Var(id) => id.upcast(),
+            ItemAstId::Struct(id) => id.upcast(),
+            ItemAstId::Enum(id) => id.upcast(),
+            ItemAstId::Event(id) => id.upcast(),
+            ItemAstId::Error(id) => id.upcast(),
+            ItemAstId::Modifier(id) => id.upcast(),
         }
     }
 
-    pub fn erase(self) -> ErasedFileAstId {
+    pub fn erase(self) -> ErasedAstId {
         match self {
-            ItemId::SourceFile(id) => id.erase(),
-            ItemId::Import(id) => id.erase(),
-            ItemId::Contract(id) => id.erase(),
-            ItemId::Interface(id) => id.erase(),
-            ItemId::Library(id) => id.erase(),
-            ItemId::Function(id) => id.erase(),
-            ItemId::Var(id) => id.erase(),
-            ItemId::Struct(id) => id.erase(),
-            ItemId::Enum(id) => id.erase(),
-            ItemId::Event(id) => id.erase(),
-            ItemId::Error(id) => id.erase(),
-            ItemId::Modifier(id) => id.erase(),
+            ItemAstId::SourceFile(id) => id.erase(),
+            ItemAstId::Import(id) => id.erase(),
+            ItemAstId::Contract(id) => id.erase(),
+            ItemAstId::Interface(id) => id.erase(),
+            ItemAstId::Library(id) => id.erase(),
+            ItemAstId::Function(id) => id.erase(),
+            ItemAstId::Var(id) => id.erase(),
+            ItemAstId::Struct(id) => id.erase(),
+            ItemAstId::Enum(id) => id.erase(),
+            ItemAstId::Event(id) => id.erase(),
+            ItemAstId::Error(id) => id.erase(),
+            ItemAstId::Modifier(id) => id.erase(),
         }
     }
+}
+
+
+//Use ItemId as the global identifier for nodes
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemId {
+    pub file: FileId,
+    pub item: ItemAstId
 }
 
 /// Unique global index for node
-#[derive(PartialEq, Eq)]
-pub struct AstId<N> {
-    pub file_id: FileId,//salsa file id
-    pub local_id: FileAstId<N>,
-}
+// #[derive(PartialEq, Eq)]
+// pub struct AstId<N> {
+//     pub file_id: FileId,//salsa file id
+//     pub local_id: FileAstId<N>,
+// }
 
-impl<N> Hash for AstId<N> {
-    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
-        self.file_id.hash(hasher);
-        self.local_id.hash(hasher);
-    }
-}
+// impl<N> Hash for AstId<N> {
+//     fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+//         self.file_id.hash(hasher);
+//         self.local_id.hash(hasher);
+//     }
+// }
 
-impl<N> Clone for AstId<N> {
-    fn clone(&self) -> Self { *self }
-}
+// impl<N> Clone for AstId<N> {
+//     fn clone(&self) -> Self { *self }
+// }
 
-impl<N> Copy for AstId<N> {}
+// impl<N> Copy for AstId<N> {}
 
 
 
@@ -155,8 +163,8 @@ pub fn is_supported_node(node: &Node<'_>) -> bool {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct AstIdMap {
-    ptr_to_id: FxHashMap<NodePtr, ErasedFileAstId>,
-    id_to_ptr: FxHashMap<ErasedFileAstId, NodePtr>,
+    ptr_to_id: FxHashMap<NodePtr, ErasedAstId>,
+    id_to_ptr: FxHashMap<ErasedAstId, NodePtr>,
 }
 
 impl AstIdMap {
@@ -177,7 +185,7 @@ impl AstIdMap {
         queue.push_back((root.node(), None));
 
         while let Some((node, parent)) = queue.pop_front() {
-            let node_ptr = NodePtr::from_raw_node(node);
+            let node_ptr = NodePtr::from_node(node);
             let id = Self::generate_id(parent, ptr_id, &mut parent_map);
             ptr_id += 1;
             ptr_to_id.insert(node_ptr, id);
@@ -199,37 +207,38 @@ impl AstIdMap {
         self
     }
 
-    fn generate_id(parent: Option<ErasedFileAstId>, index: usize, parent_map: &mut FxHashMap<usize, usize>) -> ErasedFileAstId {
+    fn generate_id(parent: Option<ErasedAstId>, index: usize, parent_map: &mut FxHashMap<usize, usize>) -> ErasedAstId {
         if let Some(parent) = parent {
             let idx = parent_map.entry(parent.id as usize).or_default();
             let id = *idx;
             *idx += 1;
-            ErasedFileAstId { id: id as u32, parent: Some(parent.id) }
+            ErasedAstId { id: id as u32, parent: Some(parent.id) }
         } else {
-            ErasedFileAstId { id: index as u32, parent: None }
+            ErasedAstId { id: index as u32, parent: None }
         }
     }
 
-    pub fn id_erased(&self, ptr: NodePtr) -> Option<ErasedFileAstId> {
+    pub fn id_erased(&self, ptr: NodePtr) -> Option<ErasedAstId> {
         self.ptr_to_id.get(&ptr).copied()
     }
 
     /// No type Inference, Lets the call site specify the type of node.
-    pub fn id_of_ptr<N: ToAstNode>(&self, ptr: NodePtr) -> Option<FileAstId<N>> {
-        self.id_erased(ptr).map(FileAstId::from_erased)
+    /// TODO add a cancast for N to check if the node is of the correct type (impl cancast(nodeKind))
+    pub fn id_of_ptr<N: ToAstNode>(&self, ptr: NodePtr) -> Option<AstId<N>> {
+        self.id_erased(ptr).map(AstId::from_erased)
     }
 
     /// No type Inference, Lets the call site specify the type of node.
-    pub fn id_of_node<N: ToAstNode>(&self, n: Node<'_>) -> Option<FileAstId<N>> {
-        self.id_of_ptr(NodePtr::from_raw_node(n))
+    pub fn id_of_node<N: ToAstNode>(&self, n: Node<'_>) -> Option<AstId<N>> {
+        self.id_of_ptr(NodePtr::from_node(n))
     }
  
-    pub fn id_of<N: ToAstNode>(&self, n: &N) -> Option<FileAstId<N>> {
+    pub fn id_of<N: ToAstNode>(&self, n: &N) -> Option<AstId<N>> {
         let ptr = NodePtr::from_ast_node(n.ast_node_ref());
         self.id_of_ptr(ptr)
     }
  
-    pub fn get<N: ToAstNode>(&self, root: &AstNode, id: FileAstId<N>) -> Option<N> {
+    pub fn get<N: ToAstNode>(&self, root: &AstNode, id: AstId<N>) -> Option<N> {
         let ptr = self.id_to_ptr.get(&id.erase()).copied();
         //Assert root contains node?
         let node = ptr.and_then(|ptr| ptr.to_node(root)).unwrap();
@@ -275,7 +284,7 @@ impl NodePtr {
     }
 
     #[inline]
-    pub fn from_raw_node(node: Node) -> Self {
+    pub fn from_node(node: Node) -> Self {
         Self { kind: node.kind_id().into(), range: PtrRange::from_range(node.range()) }
     }
 

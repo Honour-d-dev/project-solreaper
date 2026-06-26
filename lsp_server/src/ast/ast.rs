@@ -1,30 +1,6 @@
-#![allow(unused)]
-/// My current approach to tackle the inheritance problem:
-/// Implement a per-project inheritance graph
-/// graph implements forwards and backwards dependency, for easy mods when contracts change
-/// The graph is incrementally updated as we discover(fully lower on did-open) files
-/// ideally this graph should be in salsa so we dont have to eagerly apply changes
-/// from the graph we can linearize  and build full symbol/scope per contact containing parent symbols/scopes
-/// but how  do i marry the scope system  with the inheritance graph?
-/// the scope system helps for local symbol resolution
-/// the inheritance graph helps attach inherited symbols to the scope
-/// 
-/// with selective parsing we can quicky get all symbols in a within the scope range by identifying the scope node
-/// for efficiency the symbols wont be fully typed out nodes, just the minimal information needed for symbol resolution i.e name, type, location
-/// 
-/// Resolution order:
-/// - lexical locals
-/// - current contract members
-/// - linearized base contracts
-/// - file/import globals
-
-use std::{collections::VecDeque, marker::PhantomData, rc::Rc};
+use std::{rc::Rc};
 use triomphe::Arc;
-
-use camino::Utf8PathBuf;
-use rustc_hash::FxHashMap;
-use smol_str::SmolStr;
-use tree_sitter::{Node, Range, Tree, ffi::TSNode};
+use tree_sitter::{Node, Tree, ffi::TSNode};
 use crate::
     ast::{
         ast_id::PtrRange, 
@@ -159,12 +135,12 @@ impl AstNode {
             .map(|node| AstNode::new(node.into_raw(), self.inner.clone()))
     }
 
+    ///The top level of the node
+    /// If node is root then, top level symbols in scope
     pub fn is_root(&self) -> bool {
         self.node().kind_id() == NodeKind::SOURCE_FILE
     }
 
-    ///The top level of the node
-    /// If node is root then, top level symbols in scope
     pub fn children<'a>(&'a self, cursor: &'a mut tree_sitter::TreeCursor<'a>) -> impl Iterator<Item = AstNode> + 'a {
         assert!(self.node() == cursor.node());
         self.node().named_children(cursor)
