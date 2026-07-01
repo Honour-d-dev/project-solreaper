@@ -7,6 +7,10 @@ mod loader;
 mod ast;
 mod item_tree;
 mod def_map;
+mod resolver;
+mod body_map;
+mod salsa_id;
+mod expr;
 
 
 use lsp::SolidityLspServer;

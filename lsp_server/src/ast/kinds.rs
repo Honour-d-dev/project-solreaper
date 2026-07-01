@@ -69,15 +69,36 @@ impl NodeKind {
     pub const IF_STATEMENT: NodeKind = NodeKind(401);
     pub const WHILE_STATEMENT: NodeKind = NodeKind(403);
     pub const TRY_STATEMENT: NodeKind = NodeKind(408);
+    pub const EXPRESSION_STATEMENT: NodeKind = NodeKind(400);
 
     pub const TYPE_NAME: NodeKind = NodeKind(448);
     pub const PRIMITIVE_TYPE: NodeKind = NodeKind(460);
     pub const USER_DEFINED_TYPE: NodeKind = NodeKind(456);
+    pub const RETURN_DEFINITION: NodeKind = NodeKind(421);
+
+//      CONTEXT NODES
+    pub const EXPRESSION: NodeKind = NodeKind(427);
+    pub const MODIFIER_INVOCATION: NodeKind = NodeKind(442);
+    pub const REVERT_STATEMENT: NodeKind = NodeKind(407);
+    pub const EMIT_STATEMENT: NodeKind = NodeKind(411);
+    pub const CALL_EXPRESSION: NodeKind = NodeKind(445);
+    pub const CALL_ARGUMENT: NodeKind = NodeKind(424);
+    pub const MEMBER_EXPRESSION: NodeKind = NodeKind(437);
+    pub const ARRAY_ACCESS: NodeKind = NodeKind(438);
+
+
+    pub const NUMBER_LITERAL: NodeKind = NodeKind(469);
+    pub const HEX_STRING_LITERAL: NodeKind = NodeKind(476);
+    pub const BOOLEAN_LITERAL: NodeKind = NodeKind(475);
+    pub const STRING_LITERAL: NodeKind = NodeKind(478);
 
 
 
 //     UN-NAMED NODES
     pub const AS: NodeKind = NodeKind(21);
+    pub const MEMORY: NodeKind = NodeKind(153);
+    pub const STORAGE: NodeKind = NodeKind(154);
+    pub const CALLDATA: NodeKind = NodeKind(155);
     // ...
 }
 
@@ -124,7 +145,7 @@ impl FieldKind {
     // pub const ANCESTOR_ARGUMENTS: FieldKind = FieldKind(3);
     // pub const ARGUMENT: FieldKind = FieldKind(4);
     // pub const ATTEMPT: FieldKind = FieldKind(5);
-    // pub const BASE: FieldKind = FieldKind(6);
+    pub const BASE: FieldKind = FieldKind(6);
     pub const BODY: FieldKind = FieldKind(7);
     // pub const CONDITION: FieldKind = FieldKind(8);
     // pub const ELSE: FieldKind = FieldKind(9);
@@ -139,10 +160,10 @@ impl FieldKind {
     // pub const LEFT: FieldKind = FieldKind(18);
     pub const LOCATION: FieldKind = FieldKind(19);
     pub const NAME: FieldKind = FieldKind(20);
-    // pub const OBJECT: FieldKind = FieldKind(21);
+    pub const OBJECT: FieldKind = FieldKind(21);
     // pub const OPERATOR: FieldKind = FieldKind(22);
     pub const PARAMETERS: FieldKind = FieldKind(23);
-   // pub const PROPERTY: FieldKind = FieldKind(24);
+    pub const PROPERTY: FieldKind = FieldKind(24);
     pub const RETURN_TYPE: FieldKind = FieldKind(25);
     // pub const RIGHT: FieldKind = FieldKind(26);
     pub const SOURCE: FieldKind = FieldKind(27);

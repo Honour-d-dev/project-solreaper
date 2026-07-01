@@ -54,90 +54,6 @@ impl<N> AstId<N> {
 }
 
 
-/// useful for pattern matching out of items to retain type info.
-/// similar to ast::Item, but on the id level.
-/// ErasedFileAstId -> FileAstId -> ItemId
-/// either this or we can_cast 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ItemAstId {
-    SourceFile(AstId<ast::SourceFile>),
-    Import(AstId<ast::Import>),
-    Contract(AstId<ast::Contract>),
-    Interface(AstId<ast::Interface>),
-    Library(AstId<ast::Library>),
-    Function(AstId<ast::Function>),
-    Var(AstId<ast::Var>),
-    Struct(AstId<ast::Struct>),
-    Enum(AstId<ast::Enum>),
-    Event(AstId<ast::Event>),
-    Error(AstId<ast::Error>),
-    Modifier(AstId<ast::Modifier>),
-}
-
-impl ItemAstId {
-    pub fn upcast(self) -> AstId<ast::Item> {
-        match self {
-            ItemAstId::SourceFile(id) => id.upcast(),
-            ItemAstId::Import(id) => id.upcast(),
-            ItemAstId::Contract(id) => id.upcast(),
-            ItemAstId::Interface(id) => id.upcast(),
-            ItemAstId::Library(id) => id.upcast(),
-            ItemAstId::Function(id) => id.upcast(),
-            ItemAstId::Var(id) => id.upcast(),
-            ItemAstId::Struct(id) => id.upcast(),
-            ItemAstId::Enum(id) => id.upcast(),
-            ItemAstId::Event(id) => id.upcast(),
-            ItemAstId::Error(id) => id.upcast(),
-            ItemAstId::Modifier(id) => id.upcast(),
-        }
-    }
-
-    pub fn erase(self) -> ErasedAstId {
-        match self {
-            ItemAstId::SourceFile(id) => id.erase(),
-            ItemAstId::Import(id) => id.erase(),
-            ItemAstId::Contract(id) => id.erase(),
-            ItemAstId::Interface(id) => id.erase(),
-            ItemAstId::Library(id) => id.erase(),
-            ItemAstId::Function(id) => id.erase(),
-            ItemAstId::Var(id) => id.erase(),
-            ItemAstId::Struct(id) => id.erase(),
-            ItemAstId::Enum(id) => id.erase(),
-            ItemAstId::Event(id) => id.erase(),
-            ItemAstId::Error(id) => id.erase(),
-            ItemAstId::Modifier(id) => id.erase(),
-        }
-    }
-}
-
-
-//Use ItemId as the global identifier for nodes
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ItemId {
-    pub file: FileId,
-    pub item: ItemAstId
-}
-
-/// Unique global index for node
-// #[derive(PartialEq, Eq)]
-// pub struct AstId<N> {
-//     pub file_id: FileId,//salsa file id
-//     pub local_id: FileAstId<N>,
-// }
-
-// impl<N> Hash for AstId<N> {
-//     fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
-//         self.file_id.hash(hasher);
-//         self.local_id.hash(hasher);
-//     }
-// }
-
-// impl<N> Clone for AstId<N> {
-//     fn clone(&self) -> Self { *self }
-// }
-
-// impl<N> Copy for AstId<N> {}
-
 
 
 
@@ -293,4 +209,70 @@ impl NodePtr {
     }
 
     //Note: we can also go from ptr to typed ast::item
+}
+
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContractId {
+    pub file: FileId,
+    pub id: AstId<ast::Contract>
+}
+
+//i should be abe to go from contractId <-> ItemId
+//by wraping/unwraping internal item
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InterfaceId {
+    pub file: FileId,
+    pub id: AstId<ast::Interface>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LibraryId {
+    pub file: FileId,
+    pub id: AstId<ast::Library>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FunctionId {
+    pub file: FileId,
+    pub id: AstId<ast::Function>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModifierId {
+    pub file: FileId,
+    pub id: AstId<ast::Modifier>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructId {
+    pub file: FileId,
+    pub id: AstId<ast::Struct>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EventId {
+    pub file: FileId,
+    pub id: AstId<ast::Event>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumId {
+    pub file: FileId,
+    pub id: AstId<ast::Enum>
+}
+
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ErrorId {
+    pub file: FileId,
+    pub id: AstId<ast::Error>
+}
+
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VariableId {
+    pub file: FileId,
+    pub id: AstId<ast::Var>
 }

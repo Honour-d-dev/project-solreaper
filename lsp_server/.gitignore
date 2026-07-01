@@ -4,3 +4,5 @@
 /tree.json
 /tree.md
 /tree.txt
+/lowering.rs
+/editor.rs

@@ -116,9 +116,6 @@ impl IncrementalParser {
             cache: FxHashMap::default(),
         }
     }
-    
-    //TODO fn open_file
-    //TODO fn close_file
 
     fn edit_tree(&mut self, file: File, edit: &InputEdit) {
         self.cache.get_mut(&file).unwrap().edit(edit);
@@ -210,7 +207,7 @@ impl SalsaDb {
         let ast = self.ast(file);
         let range = PtrRange { start: byte_offset as u32, end: (byte_offset + 1) as u32 };
         let node = ast.node(range)?;
-        if node.node().kind_id() == NodeKind::IDENTIFIER.as_u16() {
+        if node.node().kind_id() == NodeKind::IDENTIFIER {
             Some(node.text().into())
         } else {
             None
@@ -225,7 +222,8 @@ impl SalsaDb {
             // New file not discovered during workspace load — create it.
             // Source root assignment is deferred; the file will resolve
             // imports via path-based package lookup.
-            let _file = File::new(&mut self.db, rope, path);
+            // we can't yet determine thr source root of a new file, so we do nothing it for now
+            //let _file = File::new(&mut self.db, rope, path);
         }
     }
 
@@ -239,7 +237,7 @@ impl SalsaDb {
 
             let start_byte = rope.char_to_byte(start);
             let end_byte = rope.char_to_byte(end);
-            let start_position = byte_to_point(&rope, start_byte);
+            let start_position = byte_to_point(&rope, start_byte);//we can provide row/line here no need too recalculate
             let end_position = byte_to_point(&rope, end_byte);
 
             rope.remove(start..end);
@@ -253,7 +251,7 @@ impl SalsaDb {
                 new_end_byte,
                 start_position,
                 old_end_position: end_position,
-                new_end_position: byte_to_point(&rope, new_end_byte),
+                new_end_position: byte_to_point(&rope, new_end_byte),//but here i think we have to calculate
             };
 
             file.set_text(&mut self.db).to(rope);
@@ -270,8 +268,10 @@ impl SalsaDb {
 
 
 pub type FileId = File;
+
 #[salsa::input]
-pub(crate) struct File {
+#[derive(Debug)]
+pub struct File {
     text: Rope,
     #[returns(ref)]
     path: Utf8PathBuf,
@@ -340,6 +340,7 @@ impl SalsaDatabase {
 pub trait RootDatabase: salsa::Database {
     fn text(&self, file: FileId) -> Arc<str>;
     fn path(&self, file: FileId) -> &Utf8PathBuf;
+    fn rope(&self, file: FileId) -> Rope;
     fn file_source_root(&self, file: FileId) -> SourceRootId;
     fn package_config(&self, root_id: SourceRootId) -> &Package;
 
@@ -360,6 +361,10 @@ impl RootDatabase for SalsaDatabase {
 
     fn path(&self, file: FileId) -> &Utf8PathBuf {
         file.path(self)
+    }
+
+    fn rope(&self, file: FileId) -> Rope {
+        file.text(self)
     }
 
     fn file_source_root(&self, file:FileId) -> SourceRootId {
@@ -413,6 +418,7 @@ impl RootDatabase for SalsaDatabase {
 //     }
 // }
 
+//caching this so we only do it once per revision. but does this means we store 2 copies of all files?
 #[salsa::tracked]//manage lru
 fn text(db: &dyn salsa::Database, file: File) -> Arc<str> {
     file.text(db).to_string().into()

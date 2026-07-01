@@ -1,22 +1,35 @@
-#![allow(unused)]
+use std::ops::Index;
+
 use triomphe::Arc;
 
 use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
-use tree_sitter::Node;
 
 use crate::{
     ast::{
-        self, Ast, AstIdMap, AstNode, ErasedFileAstId, FileAstId, ImportType, ItemId, NodePtr, ToAstNode, kinds::{
-            FieldKind, NodeKind
-        }, match_ast
-    },
-    salsa_db::{File, RootDatabase},
+        self, Ast, AstId, AstIdMap, ErasedAstId, ImportType, ToAstNode,
+    }, salsa_db::{File, RootDatabase},
 };
 
-fn field_text(node: Node<'_>, field_id: u16, source: &str) -> Option<SmolStr> {
-    node.child_by_field_id(field_id)
-        .map(|child| SmolStr::new(&source[child.byte_range()]))
+
+
+/// useful for pattern matching out of items to retain type info.
+/// similar to ast::Item, but on the id level.
+/// ErasedFileAstId -> FileAstId -> ItemId
+/// either this or we can_cast 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemId {
+    Import(AstId<ast::Import>),
+    Contract(AstId<ast::Contract>),
+    Interface(AstId<ast::Interface>),
+    Library(AstId<ast::Library>),
+    Function(AstId<ast::Function>),
+    Var(AstId<ast::Var>),
+    Struct(AstId<ast::Struct>),
+    Enum(AstId<ast::Enum>),
+    Event(AstId<ast::Event>),
+    Error(AstId<ast::Error>),
+    Modifier(AstId<ast::Modifier>),
 }
 
 
@@ -24,7 +37,6 @@ fn field_text(node: Node<'_>, field_id: u16, source: &str) -> Option<SmolStr> {
 /// Blanket type for all item_tree::node types
 #[derive(Debug, PartialEq, Eq)]
 pub enum Item {
-    SourceFile(SourceFile),
     Import(Import),
     Contract(Contract),
     Interface(Interface),
@@ -40,18 +52,16 @@ pub enum Item {
 
 
 /// ItemTree::Lowerer
-pub struct Lowerer<'db> {
-    db: &'db dyn RootDatabase,
+pub struct Lowerer {
     ast: Arc<Ast>,
     ast_id_map: Arc<AstIdMap>,
     top_level: Vec<ItemId>,
-    data: FxHashMap<ErasedFileAstId, Item>,
+    data: FxHashMap<ErasedAstId, Item>,
 }
 
-impl<'db> Lowerer<'db> {
+impl Lowerer {
     pub fn lower(db: &dyn RootDatabase, file: File) -> ItemTree {
         let mut lowerer = Lowerer {
-            db,
             ast: db.parse(file),
             ast_id_map: db.ast_id_map(file),
             top_level: Vec::new(),
@@ -66,10 +76,6 @@ impl<'db> Lowerer<'db> {
 
     fn lower_top(&mut self) {
         let root = self.ast.root();
-        let source_file = ast::SourceFile::cast(root.clone()).unwrap();
-        let source_file_id = self.ast_id_map.id_of(&source_file).unwrap();
-        self.top_level.push(ItemId::SourceFile(source_file_id));
-        self.data.insert(source_file_id.erase(), Item::SourceFile(SourceFile));
         
         for node in root.node().named_children(&mut root.node().walk()) {
             match ast::Item::cast(root.make_ast(node)) {
@@ -87,7 +93,7 @@ impl<'db> Lowerer<'db> {
                     let contract = Contract {
                             name: c.name().unwrap_or_default(),
                             bases: c.bases(),
-                            visible_members: self.lower_members(c.members()),
+                            members: self.lower_members(c.members()),
                     };
                     self.data.insert(id.erase(), Item::Contract(contract));
                     self.top_level.push(ItemId::Contract(id));
@@ -97,7 +103,7 @@ impl<'db> Lowerer<'db> {
                     let interface = Interface {
                         name: i.name().unwrap_or_default(),
                         bases: i.bases(),
-                        visible_members: self.lower_members(i.members()),
+                        members: self.lower_members(i.members()),
                     };
                     self.data.insert(id.erase(), Item::Interface(interface));
                     self.top_level.push(ItemId::Interface(id));
@@ -106,7 +112,7 @@ impl<'db> Lowerer<'db> {
                     let Some(id) = self.ast_id_map.id_of(&l) else {continue;};
                     let library = Library {
                         name: l.name().unwrap_or_default(),
-                        visible_members: self.lower_members(l.members()),
+                        members: self.lower_members(l.members()),
                     };
                     self.data.insert(id.erase(), Item::Library(library));
                     self.top_level.push(ItemId::Library(id));
@@ -251,33 +257,46 @@ impl<'db> Lowerer<'db> {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ItemTree {
-    // file-scope order only
-    pub top_level: Box<[ItemId]>,//i dont think i need itemId
+    // file-scope only
+    pub top_level: Box<[ItemId]>,
 
-    // payload by ast id (single table is fine for v1)
-    //we're using erased for now  to prevent lifetime coloring, the itemtree DOES NOT borrow from the ast
-    pub data: FxHashMap<ErasedFileAstId, Item>,
+    //we're using erased to prevent lifetime coloring, the itemtree DOES NOT borrow from the ast
+    pub data: FxHashMap<ErasedAstId, Item>,
 }
 
 
-
-//TODO implement a lowerer that lowers into the item tree. that will be more flexible(i think) since we can lower indepth or shallow like this
-impl ItemTree {
-    pub fn get(&self, item_id: ItemId) -> &Item {
-        self.data.get(&item_id.erase()).unwrap()
-    }
-
+macro_rules! impl_item_tree_index {
+    ($($ast_ty:ty => $variant:ident),* $(,)?) => {
+        $(
+            impl Index<AstId<$ast_ty>> for ItemTree {
+                type Output = $variant;
+                fn index(&self, index: AstId<$ast_ty>) -> &Self::Output {
+                    match self.data.get(&index.erase()).unwrap() {
+                        Item::$variant(it) => it,
+                        _ => panic!(concat!("expected ", stringify!($variant))),
+                    }
+                }
+            }
+        )*
+    };
 }
 
-
-
+impl_item_tree_index! {
+    ast::Import => Import,
+    ast::Contract => Contract,
+    ast::Interface => Interface,
+    ast::Library => Library,
+    ast::Function => Function,
+    ast::Var => Var,
+    ast::Struct => Struct,
+    ast::Enum => Enum,
+    ast::Event => Event,
+    ast::Error => Error,
+    ast::Modifier => Modifier,
+}
 ///////////////////////////////////// MIR ///////////////////////////////////////////
 ///                             Item_tree::Nodes                                 ///
 /// ////////////////////////////////////////////////////////////////////////////////
-
-
-#[derive(Debug,Clone, PartialEq, Eq)]
-pub struct SourceFile;
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Import {
@@ -289,20 +308,20 @@ pub struct Import {
 pub struct Contract {
     pub name: SmolStr,
     pub bases: Box<[SmolStr]>,       // unresolved base names in v1
-    pub visible_members: Box<[ItemId]>, // we don't filter by visibity yet, this is misleading
+    pub members: Box<[ItemId]>,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Interface {
     pub name: SmolStr,
     pub bases: Box<[SmolStr]>,
-    pub visible_members: Box<[ItemId]>,// we don't filter by visibity yet, this is misleading
+    pub members: Box<[ItemId]>,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Library {
     pub name: SmolStr,
-    pub visible_members: Box<[ItemId]>,
+    pub members: Box<[ItemId]>,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
