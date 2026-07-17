@@ -1,107 +1,77 @@
+use smallvec::SmallVec;
 use smol_str::SmolStr;
-use tree_sitter::Node;
-use crate::{
-    ast::{
-        ast::{AstNode, ToAstNode},
-        kinds::{
-            NodeKind,
-            FieldKind,
-        },
-    },
-};
+use crate::ast::ast::{AstNode, ToAstNode};
+use crate::ast::kinds::{FieldKind, NodeKind};
+use crate::hir::types::Path;
 
-
-
-////////////////////////////////////////////////////
-///              CONTRACT                       ///
-//////////////////////////////////////////////////
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceFile {
-    raw: AstNode
-}
-
-impl ToAstNode for SourceFile {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-    
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::SOURCE_FILE {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::SOURCE_FILE
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Contract {
-    raw: AstNode,
-}
-
-impl Contract {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
+pub trait HasName: ToAstNode {
+    fn name(&self) -> Option<SmolStr> {
+        self.raw().node()
             .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
+            .map(|n| self.raw().text_by_range(n.byte_range()).into())
     }
+}
 
-    pub fn bases(&self) -> Box<[SmolStr]> {
-        self.raw.node()
-        .named_children(&mut self.raw.node().walk())
-        .filter(|n| n.kind_id() == NodeKind::INHERITANCE_SPECIFIER)
-        .filter_map(|inheritance| {
-            inheritance.named_children(&mut inheritance.walk())
-                .find(|base| base.kind_id() == NodeKind::USER_DEFINED_TYPE)
-                .map(|base| SmolStr::new(self.raw.text_by_range(base.byte_range())))
-        })
+pub trait HasBases: ToAstNode {
+    fn bases(&self) -> Box<[Path]> {
+        self.raw().node()
+        .named_children(&mut self.raw().node().walk())
+        .filter_map(|n| 
+            if n.kind_id() == NodeKind::INHERITANCE_SPECIFIER {
+                n.named_children(&mut n.walk())
+                .find_map(|base| {
+                    if base.kind_id() == NodeKind::USER_DEFINED_TYPE {
+                        let segments = base.named_children(&mut base.walk())
+                            .map(|ident| self.raw().text_by_range(ident.byte_range()).into())
+                            .collect::<SmallVec<_>>();
+                        Some(Path {segments})
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        )
         .collect::<Box<_>>()
     }
+}
 
-    pub fn members(&self) -> Box<[Item]> {
+pub trait HasMembers: ToAstNode {
+    fn members(&self) -> Box<[Item]> {
         let mut members = Vec::new();
-        let Some(body) = self.raw.node().child_by_field_id(FieldKind::BODY.into()) else {
+        let Some(body) = self.raw().node().child_by_field_id(FieldKind::BODY.into()) else {
             return members.into();
         };
-        for node in body.children(&mut self.raw.node().walk()) {
+        for node in body.children(&mut self.raw().node().walk()) {
             match NodeKind::from(node.kind_id()) {
                 NodeKind::FUNCTION_DEFINITION => {
-                    if let Some(func) = Function::cast(self.raw.make_ast(node)) {
+                    if let Some(func) = Function::cast(self.raw().upcast(node)) {
                         members.push(Item::Function(func));
                     }
                 }
                 NodeKind::EVENT_DEFINITION => {
-                    if let Some(event) = Event::cast(self.raw.make_ast(node)) {
+                    if let Some(event) = Event::cast(self.raw().upcast(node)) {
                         members.push(Item::Event(event));
                     }
                 }
                 NodeKind::STRUCT_DEFINITION => {
-                    if let Some(strukt) = Struct::cast(self.raw.make_ast(node)) {
+                    if let Some(strukt) = Struct::cast(self.raw().upcast(node)) {
                         members.push(Item::Struct(strukt));
                     }
                 }
                 NodeKind::ERROR_DEFINITION => {
-                    if let Some(error) = Error::cast(self.raw.make_ast(node)) {
+                    if let Some(error) = Error::cast(self.raw().upcast(node)) {
                         members.push(Item::Error(error));
                     }
                 }
                 NodeKind::MODIFIER_DEFINITION => {
-                    if let Some(modifier) = Modifier::cast(self.raw.make_ast(node)) {
+                    if let Some(modifier) = Modifier::cast(self.raw().upcast(node)) {
                         members.push(Item::Modifier(modifier));
                     }
                 }
                 NodeKind::STATE_VAR_DECLARATION => {
-                    if let Some(var) = Var::cast(self.raw.make_ast(node)) {
+                    if let Some(var) = Var::cast(self.raw().upcast(node)) {
                         members.push(Item::Var(var));
                     }
                 }
@@ -110,30 +80,69 @@ impl Contract {
         }
         members.into_boxed_slice()
     }
-
-
 }
 
-impl ToAstNode for Contract {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
+macro_rules! impl_to_ast_node {
+    ($($type:ty, $($node_kind:ident)|+ $(, $trait:ty)*)+) => {
+        $(
+            impl ToAstNode for $type {
+                
+                #[inline]
+                fn to_node(self) -> AstNode {
+                    self.raw
+                }
+                
+                #[inline]
+                fn raw(&self) -> &AstNode {
+                    &self.raw
+                }
+                
+                fn cast(n: AstNode) -> Option<Self> {
+                    if Self::can_cast(n.node().kind_id().into()) {
+                        Some(Self{raw: n})
+                    } else {
+                        None
+                    }
+                }
 
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-    
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::CONTRACT_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
+                #[inline]
+                fn can_cast(n: NodeKind) -> bool {
+                    false $(|| n == NodeKind::$node_kind)+
+                }
+            }
 
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::CONTRACT_DEFINITION
-    }
+            $(
+                impl $trait for $type {}
+            )*
+        )*
+    };
+}
+
+impl_to_ast_node!(
+    SourceFile, SOURCE_FILE
+    Import, IMPORT_DIRECTIVE
+    Contract, CONTRACT_DEFINITION, HasName, HasBases, HasMembers
+    Interface, INTERFACE_DEFINITION, HasName, HasBases, HasMembers
+    Library, LIBRARY_DEFINITION, HasName, HasMembers
+    Function, FUNCTION_DEFINITION, HasName
+    Modifier, MODIFIER_DEFINITION, HasName
+    Struct, STRUCT_DEFINITION, HasName
+    Enum, ENUM_DEFINITION, HasName
+    Event, EVENT_DEFINITION, HasName
+    Error, ERROR_DEFINITION, HasName
+    Var, STATE_VAR_DECLARATION | CONST_VAR_DECLARATION, HasName
+);
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFile {
+    raw: AstNode
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contract {
+    raw: AstNode,
 }
 
 
@@ -142,171 +151,10 @@ pub struct Interface {
     raw: AstNode,
 }
 
-impl Interface {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-
-    pub fn bases(&self) -> Box<[SmolStr]> {
-        self.raw.node()
-        .named_children(&mut self.raw.node().walk())
-        .filter(|n| n.kind_id() == NodeKind::INHERITANCE_SPECIFIER)
-        .filter_map(|inheritance| {
-            inheritance.named_children(&mut inheritance.walk())
-                .find(|base| base.kind_id() == NodeKind::USER_DEFINED_TYPE)
-                .map(|base| SmolStr::new(self.raw.text_by_range(base.byte_range())))
-        })
-        .collect::<Box<_>>()
-    }
-
-    pub fn members(&self) -> Box<[Item]> {
-        let mut members = Vec::new();
-        let Some(body) = self.raw.node().child_by_field_id(FieldKind::BODY.into()) else {
-            return members.into();
-        };
-        for node in body.children(&mut self.raw.node().walk()) {
-            match NodeKind::from(node.kind_id()) {
-                NodeKind::FUNCTION_DEFINITION => {
-                    if let Some(func) = Function::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Function(func));
-                    }
-                }
-                NodeKind::EVENT_DEFINITION => {
-                    if let Some(event) = Event::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Event(event));
-                    }
-                }
-                NodeKind::STRUCT_DEFINITION => {
-                    if let Some(strukt) = Struct::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Struct(strukt));
-                    }
-                }
-                NodeKind::ERROR_DEFINITION => {
-                    if let Some(error) = Error::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Error(error));
-                    }
-                }
-                NodeKind::MODIFIER_DEFINITION => {
-                    if let Some(modifier) = Modifier::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Modifier(modifier));
-                    }
-                }
-                NodeKind::STATE_VAR_DECLARATION => {
-                    if let Some(var) = Var::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Var(var));
-                    }
-                }
-                _ => {}
-            }
-        }
-        members.into_boxed_slice()
-    }
-}
-
-impl ToAstNode for Interface {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::INTERFACE_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-    
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::INTERFACE_DEFINITION
-    }
-}
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Library {
     raw: AstNode,
-}
-
-impl Library {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-
-
-    pub fn members(&self) -> Box<[Item]> {
-        let mut members = Vec::new();
-        let Some(body) = self.raw.node().child_by_field_id(FieldKind::BODY.into()) else {
-            return members.into();
-        };
-        for node in body.children(&mut self.raw.node().walk()) {
-            match NodeKind::from(node.kind_id()) {
-                NodeKind::FUNCTION_DEFINITION => {
-                    if let Some(func) = Function::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Function(func));
-                    }
-                }
-                NodeKind::EVENT_DEFINITION => {
-                    if let Some(event) = Event::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Event(event));
-                    }
-                }
-                NodeKind::STRUCT_DEFINITION => {
-                    if let Some(strukt) = Struct::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Struct(strukt));
-                    }
-                }
-                NodeKind::ERROR_DEFINITION => {
-                    if let Some(error) = Error::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Error(error));
-                    }
-                }
-                NodeKind::MODIFIER_DEFINITION => {
-                    if let Some(modifier) = Modifier::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Modifier(modifier));
-                    }
-                }
-                NodeKind::STATE_VAR_DECLARATION => {
-                    if let Some(var) = Var::cast(self.raw.make_ast(node)) {
-                        members.push(Item::Var(var));
-                    }
-                }
-                _ => {}
-            }
-        }
-        members.into_boxed_slice()
-    }
-}
-
-impl ToAstNode for Library {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::LIBRARY_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::LIBRARY_DEFINITION
-    }
 }
 
 
@@ -315,72 +163,10 @@ pub struct Struct {
     raw: AstNode,
 }
 
-impl Struct {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-}
-
-impl ToAstNode for Struct {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::STRUCT_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::STRUCT_DEFINITION
-    }
-}
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Enum {
     raw: AstNode,
-}
-
-impl Enum {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-}
-
-impl ToAstNode for Enum {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::ENUM_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-    
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::ENUM_DEFINITION
-    }
 }
 
 
@@ -389,72 +175,10 @@ pub struct Function {
     raw: AstNode,
 }
 
-impl Function {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-}
-
-impl ToAstNode for Function {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-    
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::FUNCTION_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::FUNCTION_DEFINITION
-    }
-}
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Var {//Single wrapper for multiple var types
     raw: AstNode,
-}
-
-impl Var {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-}
-
-impl ToAstNode for Var {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-    
-    fn cast(node: AstNode) -> Option<Self> {
-        if matches! (NodeKind::from(node.node().kind_id()), NodeKind::STATE_VAR_DECLARATION | NodeKind::VAR_DECLARATION_STATEMENT | NodeKind::CONST_VAR_DECLARATION) {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-
-    fn can_cast(node: &Node) -> bool {
-        matches! (NodeKind::from(node.kind_id()), NodeKind::STATE_VAR_DECLARATION | NodeKind::VAR_DECLARATION_STATEMENT | NodeKind::CONST_VAR_DECLARATION)
-    }
 }
 
 
@@ -463,72 +187,10 @@ pub struct Event {
     raw: AstNode,
 }
 
-impl Event {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-}
-
-impl ToAstNode for Event {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-    
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::EVENT_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::EVENT_DEFINITION
-    }
-}
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     raw: AstNode,
-}
-
-impl Error {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-}
-
-impl ToAstNode for Error {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::ERROR_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-    
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::ERROR_DEFINITION
-    }
 }
 
 
@@ -538,41 +200,16 @@ pub struct Modifier {
 }
 
 
-impl Modifier {
-    #[inline]
-    pub fn name(&self) -> Option<SmolStr> {
-        self.raw.node()
-            .child_by_field_id(FieldKind::NAME.into())
-            .map(|n| self.raw.text_by_range(n.byte_range()).into())
-    }
-}
 
-impl ToAstNode for Modifier {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::MODIFIER_DEFINITION {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-    
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::MODIFIER_DEFINITION
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    raw: AstNode,
 }
 
 
-////////////////////////////////////////////////////
-///            IMPORT                           ///
-//////////////////////////////////////////////////
+
+
+
 
 #[derive(Debug,Default, Clone, PartialEq, Eq)]
 pub(crate) enum ImportType {
@@ -590,11 +227,6 @@ pub(crate) enum ImportType {
 pub(crate) struct ImportItem {
     pub name: SmolStr,
     pub alias: Option<SmolStr>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Import {
-    raw: AstNode,
 }
 
 impl Import {
@@ -639,27 +271,6 @@ impl Import {
     }
 }
 
-impl ToAstNode for Import {
-    fn ast_node(self) -> AstNode {
-        self.raw
-    }
-
-    fn ast_node_ref(&self) -> &AstNode {
-        &self.raw
-    }
-
-    fn cast(node: AstNode) -> Option<Self> {
-        if node.node().kind_id() == NodeKind::IMPORT_DIRECTIVE {
-            Some(Self { raw: node })
-        } else {
-            None
-        }
-    }
-
-    fn can_cast(node: &Node) -> bool {
-        node.kind_id() == NodeKind::IMPORT_DIRECTIVE
-    }
-}
 
 /// ast::Item is a unification of all ast kinds acting as a blanket typed representation(i.e generic while still maintaining type info)
 /// as opposed to AstNode which is just generic with no underlying type info
@@ -682,37 +293,37 @@ pub enum Item {
 }
 
 impl ToAstNode for Item {
-    fn ast_node(self) -> AstNode {
+    fn to_node(self) -> AstNode {
         match self {
-            Item::SourceFile(s) => s.ast_node(),
-            Item::Contract(c) => c.ast_node(),
-            Item::Interface(i) => i.ast_node(),
-            Item::Library(l) => l.ast_node(),
-            Item::Struct(s) => s.ast_node(),
-            Item::Enum(e) => e.ast_node(),
-            Item::Function(f) => f.ast_node(),
-            Item::Event(e) => e.ast_node(),
-            Item::Error(e) => e.ast_node(),
-            Item::Modifier(m) => m.ast_node(),
-            Item::Import(i) => i.ast_node(),
-            Item::Var(v) => v.ast_node(),
+            Item::SourceFile(s) => s.to_node(),
+            Item::Contract(c) => c.to_node(),
+            Item::Interface(i) => i.to_node(),
+            Item::Library(l) => l.to_node(),
+            Item::Struct(s) => s.to_node(),
+            Item::Enum(e) => e.to_node(),
+            Item::Function(f) => f.to_node(),
+            Item::Event(e) => e.to_node(),
+            Item::Error(e) => e.to_node(),
+            Item::Modifier(m) => m.to_node(),
+            Item::Import(i) => i.to_node(),
+            Item::Var(v) => v.to_node(),
         }
     }
 
-    fn ast_node_ref(&self) -> &AstNode {
+    fn raw(&self) -> &AstNode {
         match self {
-            Item::SourceFile(s) => s.ast_node_ref(),
-            Item::Contract(c) => c.ast_node_ref(),
-            Item::Interface(i) => i.ast_node_ref(),
-            Item::Library(l) => l.ast_node_ref(),
-            Item::Struct(s) => s.ast_node_ref(),
-            Item::Enum(e) => e.ast_node_ref(),
-            Item::Function(f) => f.ast_node_ref(),
-            Item::Event(e) => e.ast_node_ref(),
-            Item::Error(e) => e.ast_node_ref(),
-            Item::Modifier(m) => m.ast_node_ref(),
-            Item::Import(i) => i.ast_node_ref(),
-            Item::Var(v) => v.ast_node_ref(),
+            Item::SourceFile(s) => s.raw(),
+            Item::Contract(c) => c.raw(),
+            Item::Interface(i) => i.raw(),
+            Item::Library(l) => l.raw(),
+            Item::Struct(s) => s.raw(),
+            Item::Enum(e) => e.raw(),
+            Item::Function(f) => f.raw(),
+            Item::Event(e) => e.raw(),
+            Item::Error(e) => e.raw(),
+            Item::Modifier(m) => m.raw(),
+            Item::Import(i) => i.raw(),
+            Item::Var(v) => v.raw(),
         }
     }
 
@@ -734,9 +345,9 @@ impl ToAstNode for Item {
         }
     }
 
-    fn can_cast(node: &Node) -> bool {
+    fn can_cast(n: NodeKind) -> bool {
         matches!(
-            NodeKind::from(node.kind_id()),
+            n,
                 NodeKind::SOURCE_FILE
                 | NodeKind::CONTRACT_DEFINITION
                 | NodeKind::INTERFACE_DEFINITION
@@ -752,46 +363,4 @@ impl ToAstNode for Item {
                 | NodeKind::CONST_VAR_DECLARATION
         )
     }
-}
-
-
-#[macro_export]
-macro_rules! match_ast {
-    //root+node
-    (
-        match ($owner:expr, $node:expr) {
-            $( $( $path:ident )::+ ($it:pat) => $res:expr, )*
-            _ => $catch_all:expr $(,)?
-        }
-    ) => {{
-        let __node = $node;
-        $(
-            if <$($path)::+ as $crate::ast::ToAstNode>::can_cast(&__node) {
-                let $it = <$($path)::+ as $crate::ast::ToAstNode>::cast(
-                    ($owner).make_ast(__node)
-                ).expect("match_ast!: cast failed after can_cast");
-                $res
-            } else
-        )*
-        { $catch_all }
-    }};
-
-    //AstNode.
-    (
-        match ($ast:expr) {
-            $( $( $path:ident )::+ ($it:pat) => $res:expr, )*
-            _ => $catch_all:expr $(,)?
-        }
-    ) => {{
-        let __ast = $ast;
-        let __node = __ast.node();
-        $(
-            if <$($path)::+ as $crate::ast::ToAstNode>::can_cast(&__node) {
-                let $it = <$($path)::+ as $crate::ast::ToAstNode>::cast(__ast)
-                    .expect("match_ast!: cast failed after can_cast");
-                $res
-            } else
-        )*
-        { $catch_all }
-    }};
 }

@@ -3,14 +3,10 @@ use std::{collections::VecDeque, hash::{Hash, Hasher}};
 use std::marker::PhantomData;
 use rustc_hash::FxHashMap;
 use tree_sitter::{Node, Range};
-use crate::{
-    ast::{
-        self,
-        ast::{AstNode, ToAstNode},
-        kinds::{NodeKind},
-    },
-    salsa_db::FileId,
-};
+use crate::ast::ast::{AstNode, ToAstNode};
+use crate::ast::kinds::NodeKind;
+use crate::ast::{self, ByteRange};
+use crate::salsa::FileId;
 
 
 /// file-local node index wrapper
@@ -138,19 +134,18 @@ impl AstIdMap {
         self.ptr_to_id.get(&ptr).copied()
     }
 
-    /// No type Inference, Lets the call site specify the type of node.
-    /// TODO add a cancast for N to check if the node is of the correct type (impl cancast(nodeKind))
+
     pub fn id_of_ptr<N: ToAstNode>(&self, ptr: NodePtr) -> Option<AstId<N>> {
-        self.id_erased(ptr).map(AstId::from_erased)
+        N::can_cast(ptr.kind).then(|| self.id_erased(ptr).map(AstId::from_erased)).flatten()
     }
 
-    /// No type Inference, Lets the call site specify the type of node.
+
     pub fn id_of_node<N: ToAstNode>(&self, n: Node<'_>) -> Option<AstId<N>> {
         self.id_of_ptr(NodePtr::from_node(n))
     }
  
     pub fn id_of<N: ToAstNode>(&self, n: &N) -> Option<AstId<N>> {
-        let ptr = NodePtr::from_ast_node(n.ast_node_ref());
+        let ptr = NodePtr::from_ast_node(n.raw());
         self.id_of_ptr(ptr)
     }
  
@@ -164,23 +159,39 @@ impl AstIdMap {
 
 
 
-
 ///                NODEPTR
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PtrRange {
+pub struct NodeRange {
     pub start: u32,
     pub end: u32,
 }
 
-impl PtrRange {
+impl NodeRange {
+
+    #[inline]
+    pub fn from(node: &Node) -> Self {
+        Self { start: node.start_byte() as u32, end: node.end_byte() as u32 }
+    }
+
     #[inline]
     pub fn from_range(range: Range) -> Self {
         Self { start: range.start_byte as u32, end: range.end_byte as u32 }
     }
 
     #[inline]
-    pub fn contains(&self, other: &PtrRange) -> bool {
+    pub fn from_byte_range(range: ByteRange) -> Self {
+        Self { start: range.start as u32, end: range.end as u32 }
+    }
+
+    #[inline]
+    pub fn contains(&self, other: &NodeRange) -> bool {
         self.start <= other.start && self.end >= other.end
+    }
+}
+
+impl Into<ByteRange> for NodeRange {
+    fn into(self) -> ByteRange {
+        self.start as usize..self.end as usize
     }
 }
 
@@ -190,18 +201,18 @@ impl PtrRange {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodePtr {
     kind: NodeKind,
-    range: PtrRange,
+    range: NodeRange,
 }
 
 impl NodePtr {
     #[inline]
     pub fn from_ast_node(node: &AstNode) -> Self {
-        Self { kind: node.node().kind_id().into(), range: PtrRange::from_range(node.node().range()) }
+        Self { kind: node.node().kind_id().into(), range: NodeRange::from_range(node.node().range()) }
     }
 
     #[inline]
     pub fn from_node(node: Node) -> Self {
-        Self { kind: node.kind_id().into(), range: PtrRange::from_range(node.range()) }
+        Self { kind: node.kind_id().into(), range: NodeRange::from_range(node.range()) }
     }
 
     pub fn to_node(&self, root: &AstNode) -> Option<AstNode> {
@@ -272,7 +283,7 @@ pub struct ErrorId {
 
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VariableId {
+pub struct VarId {
     pub file: FileId,
     pub id: AstId<ast::Var>
 }

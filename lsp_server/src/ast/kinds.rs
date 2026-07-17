@@ -54,14 +54,17 @@ impl NodeKind {
     pub const CONTRACT_BODY: NodeKind = NodeKind(358);
     pub const FUNCTION_BODY: NodeKind = NodeKind(426);
     pub const STRUCT_BODY: NodeKind = NodeKind(362);
+    pub const STRUCT_MEMBER: NodeKind = NodeKind(361);
+    pub const ENUM_VALUE: NodeKind = NodeKind(528);
 
     pub const PARAMETER: NodeKind = NodeKind(454);
     pub const ERROR_PARAMETER: NodeKind = NodeKind(352);
     pub const EVENT_PARAMETER: NodeKind = NodeKind(367);
     pub const STATE_VAR_DECLARATION: NodeKind = NodeKind(412);
     pub const VAR_DECLARATION: NodeKind = NodeKind(398);
+    pub const VAR_DECLARATION_TUPLE: NodeKind = NodeKind(399);
     pub const CONST_VAR_DECLARATION: NodeKind = NodeKind(349);
-
+    
     pub const STATEMENT: NodeKind = NodeKind(372);
     pub const VAR_DECLARATION_STATEMENT: NodeKind = NodeKind(397);
     pub const BLOCK_STATEMENT: NodeKind = NodeKind(396);
@@ -75,9 +78,13 @@ impl NodeKind {
     pub const PRIMITIVE_TYPE: NodeKind = NodeKind(460);
     pub const USER_DEFINED_TYPE: NodeKind = NodeKind(456);
     pub const RETURN_DEFINITION: NodeKind = NodeKind(421);
-
-//      CONTEXT NODES
+    pub const RETURN_PARAMETER: NodeKind = NodeKind(453);
+    pub const VISIBILITY: NodeKind = NodeKind(413);
+    pub const STATE_MUTABILITY: NodeKind = NodeKind(414);
+    
+    //      CONTEXT NODES
     pub const EXPRESSION: NodeKind = NodeKind(427);
+    pub const TUPLE_EXPRESSION: NodeKind = NodeKind(432);
     pub const MODIFIER_INVOCATION: NodeKind = NodeKind(442);
     pub const REVERT_STATEMENT: NodeKind = NodeKind(407);
     pub const EMIT_STATEMENT: NodeKind = NodeKind(411);
@@ -99,6 +106,8 @@ impl NodeKind {
     pub const MEMORY: NodeKind = NodeKind(153);
     pub const STORAGE: NodeKind = NodeKind(154);
     pub const CALLDATA: NodeKind = NodeKind(155);
+    pub const CONSTANT: NodeKind = NodeKind(24);
+    pub const IMMUTABLE: NodeKind = NodeKind(172);
     // ...
 }
 
@@ -156,7 +165,7 @@ impl FieldKind {
     pub const INDEX: FieldKind = FieldKind(14);
     // pub const INITIAL: FieldKind = FieldKind(15);
     // pub const KEY_IDENTIFIER: FieldKind = FieldKind(16);
-    // pub const KEY_TYPE: FieldKind = FieldKind(17);
+    pub const KEY_TYPE: FieldKind = FieldKind(17);
     // pub const LEFT: FieldKind = FieldKind(18);
     pub const LOCATION: FieldKind = FieldKind(19);
     pub const NAME: FieldKind = FieldKind(20);

@@ -3,7 +3,7 @@ use triomphe::Arc;
 use tree_sitter::{Node, Tree, ffi::TSNode};
 use crate::
     ast::{
-        ast_id::PtrRange, 
+        ast_id::NodeRange, 
         kinds::NodeKind
     };
     
@@ -15,7 +15,7 @@ use crate::
 /// basically it needs to be able to lower targeted ranges/nodes on demand
 /// 
 
-type ByteRange = std::ops::Range<usize>;
+pub type ByteRange = std::ops::Range<usize>;
 type AstInner = Rc<Inner>;
 
 #[derive(Debug, Clone)]
@@ -24,6 +24,10 @@ pub struct Inner {
     source: Arc<str>,
 }
 
+/// we avoid doing a deep tree comparison (node by node)
+/// if the sources are equal we know the trees are
+/// Allthough source comparison is less stable ie. slightly different source can produce identical trees
+/// Its cheaper
 impl PartialEq for Inner {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source
@@ -65,31 +69,18 @@ impl Ast {
             inner: Rc::new(self.inner.clone()),
         }
     }
-
-     pub fn make_ast(&self, node: Node<'_>) -> AstNode {
-        AstNode::new(node.into_raw(), Rc::new(self.inner.clone()))
-    }
-
-    pub fn node(&self, range: PtrRange) -> Option<AstNode> {
-        self.tree()
-            .root_node()
-            .descendant_for_byte_range(range.start as usize, range.end as usize)
-            .map(|node| AstNode::new(node.into_raw(), Rc::new(self.inner.clone())))
-    }
-
 }
 
 
-/// for comparism AstNode is like a RedNode(SyntaxNode) in rowan
+/// for comparison AstNode is like a RedNode(SyntaxNode) in rowan
 /// we can cast from this to typed nodes(contracts, fns, struct etc.) and back
 /// One major diff is that unike green nodes, tree-sitter nodes dont own their data/syntax-string, so we have to use a shared view
-
-
 
 /// lifetime colouring work around for AstNode
 /// Using the raw TsNode instead of the typed Node<'a> to avoid lifetime coloring
 /// but we incure an extra 8 byte overhead
-/// We keep a copy of the tree and source pointer so tree is never dropped as long as a node exists
+/// Basically, we store a copy of the tree, so tree is never dropped as long as a node exists
+/// and the TSNode raw pointer to tree is never null
 #[derive(Debug, Clone)]
 pub struct AstNode{
     node: TSNode,
@@ -99,7 +90,7 @@ pub struct AstNode{
 
 impl PartialEq for AstNode {
     fn eq(&self, other: &Self) -> bool {
-        self.inner == other.inner
+        self.node.id == other.node.id
     }
 }
 
@@ -118,27 +109,41 @@ impl AstNode {
         self.node
     }
 
+    fn ast(&self) -> Ast {
+        Ast { inner: (*self.inner).clone() }
+    }
+
+    #[inline]
     pub fn text(&self) -> &str {
         &self.inner.source[self.node().byte_range()]
     }
 
+    #[inline]
     pub fn text_by_range(&self, range: ByteRange) -> &str {
         &self.inner.source[range]
     }
-
-    pub fn make_ast(&self, node: Node<'_>) -> AstNode {
-        AstNode::new(node.into_raw(), self.inner.clone())
-    }
-
-    pub fn child_node(&self, range: PtrRange) -> Option<AstNode> {
-        self.node().descendant_for_byte_range(range.start as usize, range.end as usize)
-            .map(|node| AstNode::new(node.into_raw(), self.inner.clone()))
-    }
-
+    
     ///The top level of the node
     /// If node is root then, top level symbols in scope
     pub fn is_root(&self) -> bool {
         self.node().kind_id() == NodeKind::SOURCE_FILE
+    }
+
+    /// Converts a tree-sitter Node<'a> to an AstNode 
+    /// useful for erasing the lifetime bounds of tree-sitter nodes
+    /// AstNodes can't dangle since they maintain a refcount to the underlying tree
+    pub fn upcast(&self, node: Node<'_>) -> AstNode {
+        AstNode::new(node.into_raw(), self.inner.clone())
+    }
+
+    pub fn child_node(&self, range: NodeRange) -> Option<AstNode> {
+        self.node().descendant_for_byte_range(range.start as usize, range.end as usize)
+            .map(|node| AstNode::new(node.into_raw(), self.inner.clone()))
+    }
+
+    pub fn named_child_node(&self, range: NodeRange) -> Option<AstNode> {
+        self.node().named_descendant_for_byte_range(range.start as usize, range.end as usize)
+            .map(|node| AstNode::new(node.into_raw(), self.inner.clone()))
     }
 
     pub fn children<'a>(&'a self, cursor: &'a mut tree_sitter::TreeCursor<'a>) -> impl Iterator<Item = AstNode> + 'a {
@@ -152,10 +157,14 @@ impl AstNode {
 
 /// Anything that can move to and from an AstNode
 pub trait ToAstNode: Sized {
-    fn ast_node(self) -> AstNode;
-    fn ast_node_ref(&self) -> &AstNode;
+
+    fn to_node(self) -> AstNode;
+
+    fn raw(&self) -> &AstNode;
+
     fn cast(n: AstNode) -> Option<Self>;
-    fn can_cast(n: &Node) -> bool;
+
+    fn can_cast(n: NodeKind) -> bool;
 }
 
 
