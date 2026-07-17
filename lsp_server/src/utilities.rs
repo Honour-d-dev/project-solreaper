@@ -107,124 +107,6 @@ pub(crate) fn byte_to_point(r: &Rope, byte_idx: usize) -> Point {
 }
 
 
-pub(crate) fn format_symbol_hover(symbol: &Symbol) -> String {
-    let (symbol_kind, name, docs, signature, metadata) = match symbol {
-        Symbol::Contract(contract) => (
-            "Contract",
-            contract.name.as_str(),
-            contract.docs.as_str(),
-            contract.signature.as_str(),
-            format!(
-                "- Bases: {}\n- State vars: {}\n- Functions: {}",
-                if contract.bases.is_empty() {
-                    "None".to_string()
-                } else {
-                    contract.bases.join(", ")
-                },
-                contract.state_vars.len(),
-                contract.functions.len(),
-            ),
-        ),
-        Symbol::Function(function) => (
-            "Function",
-            function.name.as_str(),
-            function.docs.as_str(),
-            function.signature.as_str(),
-            format!(
-                "- Parameters: {}\n- Local vars: {}",
-                function.parameters.len(),
-                function.local_vars.len(),
-            ),
-        ),
-        Symbol::IFunction(function) => (
-            "Interface Function",
-            function.name.as_str(),
-            function.docs.as_str(),
-            function.signature.as_str(),
-            format!("- Parameters: {}", function.parameters.len()),
-        ),
-        Symbol::Interface(interface) => (
-            "Interface",
-            interface.name.as_str(),
-            interface.docs.as_str(),
-            interface.signature.as_str(),
-            format!("- Bases: {}", if interface.bases.is_empty() { "None".to_string() } else { interface.bases.join(", ") }),
-        ),
-        Symbol::Library(library) => (
-            "Library",
-            library.name.as_str(),
-            library.docs.as_str(),
-            library.signature.as_str(),
-            format!("- Functions: {}", library.functions.len()),
-        ),
-        Symbol::Event(event) => (
-            "Event",
-            event.name.as_str(),
-            event.docs.as_str(),
-            event.signature.as_str(),
-            format!("- Parameters: {}", event.parameters.len()),
-        ),
-        Symbol::Error(error) => (
-            "Error",
-            error.name.as_str(),
-            error.docs.as_str(),
-            error.signature.as_str(),
-            format!("- Parameters: {}", error.parameters.len()),
-        ),
-        Symbol::Struct(strukt) => (
-            "Struct",
-            strukt.name.as_str(),
-            strukt.docs.as_str(),
-            strukt.signature.as_str(),
-            format!("- Fields: {}", strukt.fields.len()),
-        ),
-        Symbol::Modifier(modifier) => (
-            "Modifier",
-            modifier.name.as_str(),
-            modifier.docs.as_str(),
-            modifier.signature.as_str(),
-            format!("- Parameters: {}", modifier.parameters.len()),
-        ),
-        Symbol::Variable(variable) => {
-            let kind = match variable.kind {
-                VariableKind::State => "state",
-                VariableKind::Local => "local",
-                VariableKind::Parameter => "parameter",
-                VariableKind::StructField => "struct field",
-            };
-            let typ = variable.typ.to_string();
-
-            (
-                "Variable",
-                variable.name.as_deref().unwrap_or("<anonymous>"),
-                variable.docs.as_str(),
-                variable.signature.as_str(),
-                format!("- Kind: {kind}\n- Type: {typ}"),
-            )
-        }
-    };
-
-    format!(
-        concat!(
-            "### {symbol_kind}: `{name}`\n\n",
-            "---\n\n",
-            "{natspec}\n\n",
-            "```solidity\n",
-            "{signature}\n",
-            "```\n\n",
-            "{metadata}",
-        ),
-        symbol_kind = symbol_kind,
-        name = name,
-        natspec = if docs.is_empty() {
-            "No documentation"
-        } else {
-            docs
-        },
-        signature = signature,
-        metadata = metadata,
-    )
-}
 
 #[allow(unused)]
 pub(crate) fn print_tree_old(node: tree_sitter::Node, indentation: usize, source_code: &str) -> String {
@@ -242,20 +124,6 @@ pub(crate) fn print_tree_old(node: tree_sitter::Node, indentation: usize, source
 
     result
 }
-
-// #[allow(unused)]
-// pub(crate) fn print_tree(cursor: &mut tree_sitter::TreeCursor, source_code: &str, indentation: usize) -> String {
-//     let indent = "  ".repeat(indentation);
-//     let kind = cursor.node().kind();
-//     let text = &source_code[cursor.node().byte_range()];
-
-//     let mut result = format!("{}  {}: \"{}\"\n", indent, kind, text);
-
-//     iterate_children!(cursor, {
-//         result.push_str(&print_tree(cursor, source_code, indentation + 2));
-//     });
-//     return result;
-// }
 
 
 #[allow(unused)]
@@ -360,30 +228,7 @@ pub(crate) use iterate_children;
 use tree_sitter::Point;
 
 use crate::workspace::Remapping;
-use crate::lowering::{Symbol, VariableKind, VariableType};
-
 
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_print_tree_counter_user() {
-        //To run test:
-        //TEST_COUNTER_USER_PATH=/path/to/sol/file.sol cargo test test_print_tree_counter_user
-        let path = std::env::var("TEST_COUNTER_USER_PATH")
-            .map(camino::Utf8PathBuf::from)
-            .unwrap_or_default();
-        let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("failed to read file at {path}: {e}"));
-
-        let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_solidity::LANGUAGE.into()).expect("failed to set language");
-        let tree = parser.parse(&source, None).expect("failed to parse");
-
-        let output = print_named_tree(&mut tree.root_node().walk(), &source, 0);
-        assert!(!output.is_empty());
-        println!("{}", output);
-    }
-}
+mod tests;
