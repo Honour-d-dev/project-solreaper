@@ -1,16 +1,12 @@
 mod utilities;
 mod lsp;
-mod cursor;
-mod salsa_db;
+mod salsa;
 mod workspace;
 mod loader;
 mod ast;
-mod item_tree;
-mod def_map;
-mod resolver;
-mod body_map;
-mod salsa_id;
-mod expr;
+mod ir;
+mod hir;
+mod capabilities;
 
 
 use lsp::SolidityLspServer;

@@ -3,13 +3,10 @@ use std::ops::Index;
 use triomphe::Arc;
 
 use rustc_hash::FxHashMap;
-use smol_str::SmolStr;
+use smol_str::SmolStr as Name;
 
-use crate::{
-    ast::{
-        self, Ast, AstId, AstIdMap, ErasedAstId, ImportType, ToAstNode,
-    }, salsa_db::{File, RootDatabase},
-};
+use crate::ast::{self, Ast, AstId, AstIdMap, ErasedAstId, ImportType, ToAstNode, HasName, HasMembers};
+use crate::salsa::{File, RootDatabase};
 
 
 
@@ -29,7 +26,7 @@ pub enum ItemId {
     Enum(AstId<ast::Enum>),
     Event(AstId<ast::Event>),
     Error(AstId<ast::Error>),
-    Modifier(AstId<ast::Modifier>),
+    Modifier(AstId<ast::Modifier>), 
 }
 
 
@@ -78,7 +75,7 @@ impl Lowerer {
         let root = self.ast.root();
         
         for node in root.node().named_children(&mut root.node().walk()) {
-            match ast::Item::cast(root.make_ast(node)) {
+            match ast::Item::cast(root.upcast(node)) {
                 Some(ast::Item::Import(i)) => {
                     let Some(id) = self.ast_id_map.id_of(&i) else {continue;};
                     let import = Import {
@@ -92,7 +89,6 @@ impl Lowerer {
                     let Some(id) = self.ast_id_map.id_of(&c) else{continue;};
                     let contract = Contract {
                             name: c.name().unwrap_or_default(),
-                            bases: c.bases(),
                             members: self.lower_members(c.members()),
                     };
                     self.data.insert(id.erase(), Item::Contract(contract));
@@ -102,7 +98,6 @@ impl Lowerer {
                     let Some(id) = self.ast_id_map.id_of(&i) else {continue;};
                     let interface = Interface {
                         name: i.name().unwrap_or_default(),
-                        bases: i.bases(),
                         members: self.lower_members(i.members()),
                     };
                     self.data.insert(id.erase(), Item::Interface(interface));
@@ -300,61 +295,59 @@ impl_item_tree_index! {
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Import {
-    pub path: SmolStr,//tecnically not a small str but just to capitalize on the cheap clones
+    pub path: Name,//tecnically not a small str but just to capitalize on the cheap clones
     pub import_type: ImportType,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Contract {
-    pub name: SmolStr,
-    pub bases: Box<[SmolStr]>,       // unresolved base names in v1
+    pub name: Name,
     pub members: Box<[ItemId]>,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Interface {
-    pub name: SmolStr,
-    pub bases: Box<[SmolStr]>,
+    pub name: Name,
     pub members: Box<[ItemId]>,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Library {
-    pub name: SmolStr,
+    pub name: Name,
     pub members: Box<[ItemId]>,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
-pub struct Function {
-    pub name: SmolStr,
+pub struct Function {//TODO: Add visibility
+    pub name: Name,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Var {
-    pub name: SmolStr,
+    pub name: Name,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Struct {
-    pub name: SmolStr,
+    pub name: Name,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Enum {
-    pub name: SmolStr,
+    pub name: Name,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Event {
-    pub name: SmolStr,
+    pub name: Name,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Error {
-    pub name: SmolStr,
+    pub name: Name,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub struct Modifier {
-    pub name: SmolStr,
+    pub name: Name,
 }

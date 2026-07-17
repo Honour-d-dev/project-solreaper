@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::mem;
 use std::ops::Index;
 use std::ops::IndexMut;
@@ -5,20 +6,21 @@ use std::ops::IndexMut;
 use la_arena::{Arena, Idx};
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
+use smallvec::SmallVec;
 use smol_str::SmolStr;
 
-use crate::ast::{ContractId, EnumId, ErrorId, EventId, FunctionId, ImportType, InterfaceId, LibraryId, ModifierId, StructId, VariableId};
-use crate::item_tree::{ItemId};
-use crate::{
-    item_tree::{Import, ItemTree}, salsa_db::{FileId, RootDatabase, SourceRootId},
-};
+use crate::ast::{ContractId, EnumId, ErrorId, EventId, FunctionId, ImportType, InterfaceId, LibraryId, ModifierId, StructId, VarId};
+use crate::ir::item_tree::{ItemId, Import, ItemTree};
+use crate::salsa::{FileId, RootDatabase, SourceRootId};
 
 type Name = SmolStr;
 type ScopeId = Idx<Scope>;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefId {
-    SourceFile(FileId),
+    #[default]
+    Default,//just to satisfy default trait, not a real defid
+    File(FileId),
     Contract(ContractId),
     Interface(InterfaceId),
     Library(LibraryId),
@@ -28,14 +30,47 @@ pub enum DefId {
     Event(EventId),
     Enum(EnumId),
     Error(ErrorId),
-    Variable(VariableId),
+    Var(VarId),
 }
 
 
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct Scope {
+    pub owner: DefId,
     pub parent: Option<ScopeId>,
-    pub by_name: FxHashMap<Name, Vec<DefId>>,
+    pub by_name: FxHashMap<Name, ScopeData>
+    //TODO switch to namespace grouping
+}
+
+#[derive(PartialEq, Eq, Clone)]
+pub struct ScopeData {
+    pub namespace: Namespace,
+    pub defs: SmallVec<[DefId;1]>,//most names wont be overloaded
+}
+
+/// Overloads can only occur per namespace in a scope and some namespaces dont support overloads within same scope. e.g types and variables
+#[derive(PartialEq, Eq, Clone)]
+pub enum Namespace {
+    Type,//File, Contract, Interface, Library, Struct, Enum
+    Function,
+    Error,
+    Event,
+    Variable,
+    Any,
+}
+
+impl Namespace {
+    pub fn from(def: &DefId) -> Namespace {
+        match def {
+            DefId::File(_) | DefId::Contract(_) | DefId::Interface(_) | DefId::Library(_) | DefId::Struct(_) | DefId::Enum(_) => Namespace::Type,
+            DefId::Function(_) => Namespace::Function,
+            DefId::Modifier(_) => Namespace::Function,
+            DefId::Event(_) => Namespace::Event,
+            DefId::Error(_) => Namespace::Error,
+            DefId::Var(_) => Namespace::Variable,
+            DefId::Default => Namespace::Any,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -49,20 +84,19 @@ pub struct DefData {
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct Unresolved {
     pub imports: Vec<Import>,
-    pub names: Vec<Name>,//mainly for bases
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ScopeRef {
-    root: SourceRootId,
-    scope: ScopeId,
+pub struct ScopeEntry {
+    pub root: SourceRootId,
+    pub scope: ScopeId,
 }
 
 #[derive(Clone,PartialEq, Eq)]
 pub struct FileData {
-    id: DefId,
-    scope: ScopeId,
-    imported_scopes: Vec<ScopeRef>,
+    pub id: DefId,
+    pub scope: ScopeId,
+    pub imported_scopes: Vec<ScopeEntry>,
 }
 
 
@@ -98,17 +132,17 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
                 ItemId::Contract(id) => {
                     let c = &self.item_tree[id];
                     let id = DefId::Contract(ContractId { file: self.file, id });
-                    self.collect_container(id, scope_id, c.name.clone(), &c.members,Some(&c.bases));
+                    self.collect_container(id, scope_id, c.name.clone(), &c.members);
                 }
                 ItemId::Interface(id) => {
                     let i = &self.item_tree[id];
                     let id = DefId::Interface(InterfaceId { file: self.file, id });
-                    self.collect_container(id, scope_id, i.name.clone(), &i.members, Some(&i.bases));
+                    self.collect_container(id, scope_id, i.name.clone(), &i.members);
                 }
                 ItemId::Library(id) => {
                     let l = &self.item_tree[id];
                     let id = DefId::Library(LibraryId { file: self.file, id });
-                    self.collect_container(id, scope_id, l.name.clone(), &l.members, None);
+                    self.collect_container(id, scope_id, l.name.clone(), &l.members);
                 }
                 ItemId::Struct(id) => {//TODO: collect fields. Do we create struct scopes for fields??
                     let s = &self.item_tree[id];
@@ -142,7 +176,7 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
                 }
                 ItemId::Var(id) => {
                     let v = &self.item_tree[id];
-                    let id = DefId::Variable(VariableId { file: self.file, id });
+                    let id = DefId::Var(VarId { file: self.file, id });
                     self.collect_def(id, scope_id, None, v.name.clone());
                 }
             }
@@ -151,9 +185,9 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
     }
 
     fn collect_file(&mut self) -> ScopeId {
-        let scope_id = self.collector.scopes.alloc(Scope::default());
+        let id = DefId::File(self.file);
+        let scope_id = self.collector.scopes.alloc(Scope {owner: id, ..Default::default()});
 
-        let id = DefId::SourceFile(self.file);
         self.collector.files.insert(self.file, FileData {
             id,
             scope: scope_id,
@@ -169,21 +203,13 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
         scope_id
     }
 
-    fn collect_container(&mut self, id: DefId, scope_id: ScopeId, name: Name, members: &[ItemId], bases: Option<&[Name]>) {
+    fn collect_container(&mut self, id: DefId, scope_id: ScopeId, name: Name, members: &[ItemId]) {
         let sub_scope = Scope {
+            owner: id,
             parent: Some(scope_id),
             ..Default::default()
         };
-        //FIXME: this is unused
-        if let Some(bases) = bases {
-            let mut unresolved = Vec::new();
-            for base in  bases {
-                if !self.collector.scopes.index(scope_id).by_name.contains_key(base) {
-                    unresolved.push(base.clone());
-                }
-            }
-            self.collector.unresolved.entry(self.file).or_default().names.extend(unresolved);
-        }
+        
         let sub_scope_id = self.collector.scopes.alloc(sub_scope);
 
         self.collect_def(id, scope_id, Some(sub_scope_id), name);
@@ -202,7 +228,7 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
                 ItemId::Event(id) => (DefId::Event(EventId { file: self.file, id }), self.item_tree[id].name.clone()),
                 ItemId::Error(id) => (DefId::Error(ErrorId { file: self.file, id }), self.item_tree[id].name.clone()),
                 ItemId::Modifier(id) => (DefId::Modifier(ModifierId { file: self.file, id }), self.item_tree[id].name.clone()),
-                ItemId::Var(id) => (DefId::Variable(VariableId { file: self.file, id }), self.item_tree[id].name.clone()),
+                ItemId::Var(id) => (DefId::Var(VarId { file: self.file, id }), self.item_tree[id].name.clone()),
                 _ => continue
             };
 
@@ -214,7 +240,20 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
 
     fn collect_def(&mut self,id: DefId, scope_id: ScopeId, sub_scope: Option<ScopeId>, name: Name) {
         let scope = self.collector.scopes.index_mut(scope_id);
-        scope.by_name.entry(name.clone()).or_default().push(id);
+        let ns = Namespace::from(&id);
+        match scope.by_name.entry(name.clone()) {
+            Entry::Occupied(mut entry) => {
+                let e = entry.get_mut();
+                if e.namespace != ns || matches!(e.namespace, Namespace::Type | Namespace::Variable) {
+                    // subsequent defs must match the first def's namespace and the namespace must support overloading
+                    return;//TODO: collect diagnostic here?
+                }
+                e.defs.push(id);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(ScopeData { namespace: ns, defs: SmallVec::from([id]) });
+            }
+        }
         let def_data = DefData {
             name: Some(name),
             scope: scope_id,
@@ -355,7 +394,7 @@ impl<'db> Collector<'db> {
             ImportType::Full => {
                 let dep_data = self.file_data(dep_root, dep);
                 let file_data = self.files.get_mut(&file).unwrap();
-                push_unique_scope(&mut file_data.imported_scopes, ScopeRef { root: dep_root, scope: dep_data.scope });
+                push_unique_scope(&mut file_data.imported_scopes, ScopeEntry { root: dep_root, scope: dep_data.scope });
                 for scope in dep_data.imported_scopes {
                     push_unique_scope(&mut file_data.imported_scopes, scope);
                 }
@@ -365,16 +404,30 @@ impl<'db> Collector<'db> {
                 for symbol in symbols {
                     let Some(ids) = self.find_name_in_file(dep_root, dep, &symbol.name) else { continue; };
                     let name = symbol.alias.clone().unwrap_or(symbol.name.clone());
-                    let entry = self.scopes.index_mut(file_scope).by_name.entry(name).or_default();
-                    extend_unique_defs(entry, ids);
+                    match self.scopes.index_mut(file_scope).by_name.entry(name) {
+                        Entry::Occupied(mut entry) => {
+                            let e = entry.get_mut();
+                            if e.namespace != ids.namespace || matches!(e.namespace, Namespace::Type | Namespace::Variable) {
+                                continue;
+                            }
+                            extend_unique_defs(&mut e.defs, ids.defs);
+                        }
+                        Entry::Vacant(v) => {
+                            v.insert(ids);
+                        }
+                    }
                 }
             }
             ImportType::Namespace { alias } => {
                 let dep_def_id = self.file_data(dep_root, dep).id;
                 let file_scope = self.files.get(&file).unwrap().scope;
                 let scope = self.scopes.index_mut(file_scope);
-                let entry = scope.by_name.entry(alias.clone()).or_default();
-                push_unique_def(entry, dep_def_id);
+                if let Entry::Vacant(v) =   scope.by_name.entry(alias.clone()) {
+                    v.insert(ScopeData {
+                        namespace: Namespace::Type,
+                        defs: [dep_def_id].into(),
+                    });
+                }
             }
         }
     }
@@ -387,9 +440,9 @@ impl<'db> Collector<'db> {
         }
     }
 
-    fn find_name_in_file(&self, root: SourceRootId, file: FileId, name: &Name) -> Option<Vec<DefId>> {
+    fn find_name_in_file(&self, root: SourceRootId, file: FileId, name: &Name) -> Option<ScopeData> {
         let file_data = self.file_data(root, file);
-        let local_scope = ScopeRef { root, scope: file_data.scope };
+        let local_scope = ScopeEntry { root, scope: file_data.scope };
         self.find_name_in_scope(local_scope, name).or_else(|| {
             file_data
                 .imported_scopes
@@ -398,7 +451,7 @@ impl<'db> Collector<'db> {
         })
     }
 
-    fn find_name_in_scope(&self, scope: ScopeRef, name: &Name) -> Option<Vec<DefId>> {
+    fn find_name_in_scope(&self, scope: ScopeEntry, name: &Name) -> Option<ScopeData> {
         if self.root == scope.root {
             self.scopes.index(scope.scope).by_name.get(name).cloned()
         } else {
@@ -407,19 +460,19 @@ impl<'db> Collector<'db> {
     }
 }
 
-fn push_unique_scope(scopes: &mut Vec<ScopeRef>, scope: ScopeRef) {
+fn push_unique_scope(scopes: &mut Vec<ScopeEntry>, scope: ScopeEntry) {
     if !scopes.contains(&scope) {
         scopes.push(scope);
     }
 }
 
-fn push_unique_def(defs: &mut Vec<DefId>, def: DefId) {
+fn push_unique_def(defs: &mut SmallVec<[DefId; 1]>, def: DefId) {
     if !defs.contains(&def) {
         defs.push(def);
     }
 }
 
-fn extend_unique_defs(defs: &mut Vec<DefId>, new_defs: impl IntoIterator<Item = DefId>) {
+fn extend_unique_defs(defs: &mut SmallVec<[DefId; 1]>, new_defs: impl IntoIterator<Item = DefId>) {
     for def in new_defs {
         push_unique_def(defs, def);
     }
