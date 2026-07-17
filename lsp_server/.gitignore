@@ -1,8 +1,6 @@
 /target
 /src/symbols.rs
-/tmp.rs
-/tree.json
 /tree.md
 /tree.txt
-/lowering.rs
-/editor.rs
+/test_sol.txt
+/dump/*
