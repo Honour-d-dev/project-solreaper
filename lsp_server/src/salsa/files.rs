@@ -26,7 +26,7 @@ impl Files {
 
             let files = root.files.into_iter().map(|f| {
                 let durability  = if root.is_dependency { Durability::HIGH } else { Durability::LOW };
-                let file_text = File::builder(f.text.into(), f.path.clone()).durability(durability).new(db);
+                let file_text = File::builder(f.text, f.path.clone()).durability(durability).new(db);
                 file.insert(f.path, file_text);
                 file_source_root.insert(file_text, source_root_id);
                 file_text

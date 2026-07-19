@@ -155,6 +155,11 @@ impl AstIdMap {
         let node = ptr.and_then(|ptr| ptr.to_node(root)).unwrap();
         N::cast(node)
     }
+
+    pub fn get_node(&self, root: &AstNode, id: ErasedAstId) -> Option<AstNode> {
+        let ptr = self.id_to_ptr.get(&id).copied()?;
+        ptr.to_node(root)
+    }
 }
 
 

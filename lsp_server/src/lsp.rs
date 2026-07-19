@@ -1,5 +1,6 @@
+use crate::capabilities::hover::hover;
 use crate::loader;
-use crate::salsa_db::SalsaDb;
+use crate::salsa::{SalsaDb};
 use crate::utilities::{log_info, to_utf8path};
 
 use anyhow::Context;
@@ -10,7 +11,7 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{HoverRequest, Request as LspRequest};
 use lsp_types::{
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, InitializeParams, MarkupContent, MarkupKind,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
 };
 
 pub(crate) struct SolidityLspServer {
@@ -27,11 +28,13 @@ impl SolidityLspServer {
         log_info("LSP initialize handshake completed");
 
         let root_path = to_utf8path(&root_uri.context("root_uri is missing")?)?;
-        //@NOTE No vfs for now, we only use utf8Paths (& we get as_str for free) but pathing may not be compatible with windows filesystem
+        //@NOTE No vfs for now, we only use utf8Paths, pathing may not be compatible with windows filesystem
 
-        let (workspace, source_bundle) = loader::load_workspace(root_path.clone());
+        let (workspace, source_bundle) = loader::load_workspace(root_path);// Block on workspace loading
+        log_info("Workspace fully loaded");
 
         let db = SalsaDb::new(workspace, source_bundle);
+        log_info("DB Initialized");
 
         Ok(Self {
             sender,
@@ -56,32 +59,10 @@ impl SolidityLspServer {
         request: Request,
     ) -> anyhow::Result<()> {
         if request.method == HoverRequest::METHOD {
-            let params: HoverParams = serde_json::from_value(request.params)?;
-            let path = to_utf8path(&params.text_document_position_params.text_document.uri)?;
-            log_info(format!("Hover request for {path}"));
-
-            let Some(file) = self.db.file(&path) else {
-                log_info(format!("File not found: {path}"));
-                return Ok(());
+            match hover(&self.db, request) {
+                Ok(response) => self.sender.send(Message::Response(response))?,
+                Err(err) => log_info(format!("No hover Content: Error - {}", err)),
             };
-
-            let position = params.text_document_position_params.position;
-            let Some(identifier) = self.db.identifier_at_position(file, position) else {
-                log_info(format!("No identifier at position {position:?} in {path}"));
-                return Ok(());
-            };
-
-            let hover_content = format!("```solidity\n{}\n```", identifier);
-
-            let result = Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: hover_content,
-                }),
-                range: None,
-            });
-            let response = Response::new_ok(request.id, serde_json::to_value(result)?);
-            self.sender.send(Message::Response(response))?;
             return Ok(());
         }
     

@@ -210,6 +210,7 @@ impl SalsaDatabase {
             }
             current = next;
         }
+        assert!(path.len()>= 2);
         path
     }
 

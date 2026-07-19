@@ -9,7 +9,7 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 
-use crate::ast::{ContractId, EnumId, ErrorId, EventId, FunctionId, ImportType, InterfaceId, LibraryId, ModifierId, StructId, VarId};
+use crate::ast::{ContractId, EnumId, ErasedAstId, ErrorId, EventId, FunctionId, ImportType, InterfaceId, LibraryId, ModifierId, StructId, VarId};
 use crate::ir::item_tree::{ItemId, Import, ItemTree};
 use crate::salsa::{FileId, RootDatabase, SourceRootId};
 
@@ -31,6 +31,24 @@ pub enum DefId {
     Enum(EnumId),
     Error(ErrorId),
     Var(VarId),
+}
+
+impl DefId {
+    pub fn ast_id(&self) -> Option<(FileId, ErasedAstId)> {
+        Some(match self {
+            DefId::Default | DefId::File(_) => return None,
+            DefId::Contract(c) => (c.file, c.id.erase()),
+            DefId::Interface(i) => (i.file, i.id.erase()),
+            DefId::Library(l) => (l.file, l.id.erase()),
+            DefId::Function(f) => (f.file, f.id.erase()),
+            DefId::Modifier(m) => (m.file, m.id.erase()),
+            DefId::Struct(s) => (s.file, s.id.erase()),
+            DefId::Event(e) => (e.file, e.id.erase()),
+            DefId::Enum(e) => (e.file, e.id.erase()),
+            DefId::Error(e) => (e.file, e.id.erase()),
+            DefId::Var(v) => (v.file, v.id.erase()),
+        })
+    }
 }
 
 

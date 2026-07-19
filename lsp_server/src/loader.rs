@@ -1,5 +1,7 @@
 use camino::Utf8PathBuf;
 use crossbeam_channel::{Receiver, Sender};
+use ropey::Rope;
+use std::fs::File;
 
 use crate::workspace::{
     discover_workspace, DiscoveredSourceRoot, PackageId, SourceRootId, Workspace,
@@ -23,7 +25,7 @@ pub(crate) enum LoadMsg {
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedFile {
     pub path: Utf8PathBuf,
-    pub text: String,
+    pub text: Rope,
 }
 
 #[derive(Debug, Clone)]
@@ -69,9 +71,12 @@ impl Loader {
         for source_root in &self.source_roots/*par_iter*/ {
             let mut files = Vec::new();
             for path in &source_root.files {
-                let Ok(text) = std::fs::read_to_string(path.as_std_path()) else {
+               
+                let Ok(text) = (if let Ok(mut reader) = File::open(path.as_std_path()) {
+                    Rope::from_reader(&mut reader)
+                }  else {
                     continue;
-                };
+                }) else { continue };
 
                 files.push(LoadedFile {
                     path: path.clone(),
