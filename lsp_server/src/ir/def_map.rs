@@ -16,10 +16,8 @@ use crate::salsa::{FileId, RootDatabase, SourceRootId};
 type Name = SmolStr;
 type ScopeId = Idx<Scope>;
 
-#[derive(Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefId {
-    #[default]
-    Default,//just to satisfy default trait, not a real defid
     File(FileId),
     Contract(ContractId),
     Interface(InterfaceId),
@@ -36,7 +34,7 @@ pub enum DefId {
 impl DefId {
     pub fn ast_id(&self) -> Option<(FileId, ErasedAstId)> {
         Some(match self {
-            DefId::Default | DefId::File(_) => return None,
+            DefId::File(_) => return None,
             DefId::Contract(c) => (c.file, c.id.erase()),
             DefId::Interface(i) => (i.file, i.id.erase()),
             DefId::Library(l) => (l.file, l.id.erase()),
@@ -52,7 +50,7 @@ impl DefId {
 }
 
 
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Scope {
     pub owner: DefId,
     pub parent: Option<ScopeId>,
@@ -86,7 +84,6 @@ impl Namespace {
             DefId::Event(_) => Namespace::Event,
             DefId::Error(_) => Namespace::Error,
             DefId::Var(_) => Namespace::Variable,
-            DefId::Default => Namespace::Any,
         }
     }
 }
@@ -204,7 +201,7 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
 
     fn collect_file(&mut self) -> ScopeId {
         let id = DefId::File(self.file);
-        let scope_id = self.collector.scopes.alloc(Scope {owner: id, ..Default::default()});
+        let scope_id = self.collector.scopes.alloc(Scope {owner: id, parent: None, by_name: FxHashMap::default() });
 
         self.collector.files.insert(self.file, FileData {
             id,
@@ -225,7 +222,7 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
         let sub_scope = Scope {
             owner: id,
             parent: Some(scope_id),
-            ..Default::default()
+            by_name: FxHashMap::default(),
         };
         
         let sub_scope_id = self.collector.scopes.alloc(sub_scope);
