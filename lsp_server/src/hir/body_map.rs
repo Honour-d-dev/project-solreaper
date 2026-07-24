@@ -6,22 +6,20 @@ use tree_sitter::Node;
 use crate::ast::kinds::{FieldKind, NodeKind};
 use crate::ast::{AstNode, FunctionId, ModifierId, NodeRange, ToAstNode};
 use crate::hir::exprs::{Expr, ExprBuilder, ExprId, Name};
-use crate::hir::item_data::{FieldId, VariantId};
+use crate::hir::item_data::{ExprStore, FieldId, VariantId};
 use crate::hir::types::{Mutability, Primitive, TypeBuilder, TypeId, TypeName, Visibility};
 
 pub type ByteOffset = u32;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum SemanticId {
     //Def specific semantics
-    Name,//Helper id for items/defs to refer to themselves
     Local(LocalId),
     Field(FieldId),
     Variant(VariantId),
     
     // Global semantics
     Expr(ExprId),
-    Member(ExprId),
     Type(TypeId),
     TypeSegment {
         ty: TypeId,
@@ -39,13 +37,36 @@ pub enum VariableKind {
     State,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+impl std::fmt::Display for VariableKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VariableKind::Parameter => write!(f, "parameter"),
+            VariableKind::Variable => write!(f, "variable"),
+            VariableKind::Const => write!(f, "constant"),
+            VariableKind::Immutable => write!(f, "immutable"),
+            VariableKind::State => write!(f, "state"),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Location {
     #[default]
     Stack,//for builtins/primitive
     Memory,
     Calldata,
     Storage,
+}
+
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Location::Memory => write!(f, "memory"),
+            Location::Calldata => write!(f, "calldata"),
+            Location::Storage => write!(f, "storage"),
+            Location::Stack => write!(f, "stack"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,6 +103,7 @@ pub struct Local {
     type_name: TypeId,    
     location: Location,
     offset: ByteOffset,//from where this decl becomes visible
+    init: Option<ExprId>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -89,8 +111,7 @@ pub struct BodyMap {
     pub root_scope: ScopeId,
     pub scopes: Arena<Scope>,
     pub locals: Arena<Local>,
-    pub exprs: Arena<Expr>,
-    pub type_names: Arena<TypeName>,
+    pub expr_store: ExprStore,
 }
 
 #[derive(PartialEq, Eq)]
@@ -98,7 +119,6 @@ pub struct BodySourceMap {
     pub expr_scopes: ArenaMap<ExprId,ScopeId>,
     pub expr_to_node: ArenaMap<ExprId, NodeRange>,
     pub type_to_node: ArenaMap<TypeId,NodeRange>,
-    pub node_to_semantic: FxHashMap<NodeRange, SemanticId>,
 }
 
 impl BodyMap {
@@ -116,8 +136,8 @@ impl BodyMap {
 }
 
 impl Local {
-    pub fn new(name: Name, kind: VariableKind, type_name: TypeId, location: Location, offset: ByteOffset) -> Self {
-        Self { name, kind, type_name, location, offset }
+    pub fn new(name: Name, kind: VariableKind, type_name: TypeId, location: Location, offset: ByteOffset, init: Option<ExprId>) -> Self {
+        Self { name, kind, type_name, location, offset, init }
     }
 
     pub fn name(&self) -> &Name {
@@ -131,12 +151,16 @@ impl Local {
         &self.type_name
     }
 
-    pub fn location(&self) -> &Location {
-        &self.location
+    pub fn location(&self) -> Location {
+        self.location
     }
 
     pub fn offset(&self) -> ByteOffset {
         self.offset
+    }
+
+    pub fn init(&self) -> Option<ExprId> {
+        self.init
     }
 }
 
@@ -146,12 +170,10 @@ pub struct BodyBuilder {
     root_scope: ScopeId,
     scopes: Arena<Scope>,
     locals: Arena<Local>,
-    exprs: Arena<Expr>,
-    type_names: Arena<TypeName>,
+    expr_store: ExprStore,
     expr_scopes: ArenaMap<ExprId,ScopeId>,
     expr_to_node: ArenaMap<ExprId, NodeRange>,
     type_to_node: ArenaMap<TypeId,NodeRange>,
-    node_to_semantic: FxHashMap<NodeRange, SemanticId>,
 }
 
 
@@ -174,13 +196,10 @@ impl BodyBuilder {
             root_scope,
             scopes,
             locals: Arena::new(),
-            exprs: Arena::new(),
-            type_names: Arena::new(),
+            expr_store: ExprStore::default(),
             type_to_node: ArenaMap::new(),
             expr_to_node:ArenaMap::new(),
             expr_scopes: ArenaMap::new(),
-            node_to_semantic: FxHashMap::default(),
-            
         };
         
         builder.collect_parameters(owner.node());
@@ -206,16 +225,20 @@ impl BodyBuilder {
         for child in block.named_children(&mut block.walk()) {//Switch to cursor walking
             match child.kind_id().into() {
                 NodeKind::VAR_DECLARATION_STATEMENT => self.collect_declaration(child),
-                NodeKind::STATEMENT | NodeKind::IF_STATEMENT | NodeKind::WHILE_STATEMENT => self.walk_block(child),
+                NodeKind::STATEMENT | NodeKind::IF_STATEMENT | NodeKind::WHILE_STATEMENT | 
+                NodeKind::DO_WHILE_STATEMENT |NodeKind::RETURN_STATEMENT => self.walk_block(child),
                 NodeKind::BLOCK_STATEMENT | NodeKind::FOR_STATEMENT => {//maybe seperate later so loop var is declared in inner block scope
                     self.push_scope(NodeRange::from(&child));
                     self.walk_block(child);
                     self.pop_scope();
                 }
                 NodeKind::EXPRESSION | NodeKind::EXPRESSION_STATEMENT => {
-                    self.walk_expr(child);
+                    self.lower_expr(child);
                 }
-                _ => {}//TODO try/catch/do while
+                NodeKind::EMIT_STATEMENT | NodeKind::REVERT_STATEMENT => {
+                    self.lower_expr(child);
+                }
+                _ => {}//TODO try/catch
             }
         }
     }
@@ -241,7 +264,7 @@ impl BodyBuilder {
                     }
                 }
                 NodeKind::EXPRESSION => {
-                    self.walk_expr(child);
+                    self.lower_expr(child);
                 }
                 _ => {}
             }
@@ -251,6 +274,9 @@ impl BodyBuilder {
     fn collect_parameters(&mut self, owner_node: Node<'_>) {
         for child in owner_node.named_children(&mut owner_node.walk()) {
             match child.kind_id().into() {
+                NodeKind::IDENTIFIER => {
+                    self.lower_expr(child);
+                }
                 NodeKind::PARAMETER => {
                     self.add_local(
                         child,
@@ -258,7 +284,9 @@ impl BodyBuilder {
                         child.range().start_byte as ByteOffset,
                     );
                 }
- 
+                NodeKind::MODIFIER_INVOCATION => {
+                    self.lower_expr(child);
+                },
                 NodeKind::RETURN_DEFINITION => self.collect_parameters(child),
                 _ => {}//there's a return_parameter node, find where/how its used
             }
@@ -270,6 +298,7 @@ impl BodyBuilder {
         let mut type_name = None;
         let mut location = Location::default();
         let mut range = None;
+        let mut init = None;
         for child in node.children(&mut node.walk()) {
             match child.kind_id().into() {
                 NodeKind::IDENTIFIER => {
@@ -281,6 +310,7 @@ impl BodyBuilder {
                 NodeKind::MEMORY => location = Location::Memory,
                 NodeKind::STORAGE => location = Location::Storage,
                 NodeKind::CALLDATA => location = Location::Calldata,
+                NodeKind::EXPRESSION => { init = self.lower_expr(child); },
                 _ => {}
             }
         }
@@ -295,10 +325,11 @@ impl BodyBuilder {
             type_name: type_name.unwrap(),
             location,
             offset,
+            init,
         });
         
         self.scopes[self.current_scope].by_name.insert(name, local_id);
-        self.node_to_semantic.insert(range.unwrap(), SemanticId::Local(local_id));
+        self.expr_store.range_to_semantic.insert(range.unwrap(), SemanticId::Local(local_id));
     }
 
 
@@ -312,17 +343,17 @@ impl BodyBuilder {
     }
 
     fn finish(self) -> (BodyMap,BodySourceMap) {
-        let BodyBuilder { root_scope , mut scopes,locals: mut decls, mut exprs, mut expr_scopes, mut expr_to_node, mut node_to_semantic, mut type_names, mut type_to_node, ..} = self;
+        let BodyBuilder { root_scope , mut scopes,locals: mut decls, mut expr_store, mut expr_scopes, mut expr_to_node, mut type_to_node, ..} = self;
         scopes.shrink_to_fit();
         decls.shrink_to_fit();
-        exprs.shrink_to_fit();
-        type_names.shrink_to_fit();
+        expr_store.exprs.shrink_to_fit();
+        expr_store.types.shrink_to_fit();
+        expr_store.range_to_semantic.shrink_to_fit();
         type_to_node.shrink_to_fit();
         expr_scopes.shrink_to_fit();
         expr_to_node.shrink_to_fit();
-        node_to_semantic.shrink_to_fit();
-        (BodyMap {root_scope, scopes, locals: decls,exprs, type_names },
-        BodySourceMap { expr_scopes, expr_to_node, node_to_semantic,type_to_node })
+        (BodyMap {root_scope, scopes, locals: decls, expr_store },
+        BodySourceMap { expr_scopes, expr_to_node, type_to_node })
     }
 }
 
@@ -333,28 +364,40 @@ impl ExprBuilder for BodyBuilder {
     }
 
     fn alloc_expr(&mut self, expr: Expr, node: Node) -> ExprId {
-        let expr_id = self.exprs.alloc(expr);
+        let expr_id = self.expr_store.exprs.alloc(expr);
         let range = NodeRange::from(&node);
         self.expr_to_node.insert(expr_id, range);
-        self.node_to_semantic.insert(range, SemanticId::Expr(expr_id));
+        self.expr_store.range_to_semantic.insert(range, SemanticId::Expr(expr_id));
         self.expr_scopes.insert(expr_id, self.current_scope);
         expr_id
     }
 
     fn alloc_member_expr(&mut self, member: Expr, range: NodeRange, node: Node) -> ExprId {
         let mem_id = self.alloc_expr(member, node);
-        self.node_to_semantic.insert(range, SemanticId::Member(mem_id));
+        self.expr_store.range_to_semantic.insert(range, SemanticId::Expr(mem_id));
         mem_id
+    }
+
+    fn alloc_call_expr(&mut self, call: Expr, callee_node: Node, node: Node) -> ExprId {
+        let call_id = self.alloc_expr(call, node);
+        let callee_range = NodeRange::from(&callee_node);
+        self.expr_store.range_to_semantic.insert(callee_range, SemanticId::Expr(call_id));
+        if callee_node.kind_id() == NodeKind::MEMBER_EXPRESSION {
+            if let Some(prop) = callee_node.child_by_field_id(FieldKind::PROPERTY.into()) {
+                self.expr_store.range_to_semantic.insert(NodeRange::from(&prop), SemanticId::Expr(call_id));
+            }
+        }
+        call_id
     }
 }
 
 impl TypeBuilder for BodyBuilder {
     fn alloc_type(&mut self, ty: TypeName, node: Node) -> TypeId {
         let seg_count = ty.seg_count();
-        let ty_id = self.type_names.alloc(ty);
+        let ty_id = self.expr_store.types.alloc(ty);
         let ptr = NodeRange::from(&node);
         self.type_to_node.insert(ty_id, ptr);
-        self.node_to_semantic.insert(ptr, SemanticId::Type(ty_id));
+        self.expr_store.range_to_semantic.insert(ptr, SemanticId::Type(ty_id));
         if seg_count > 1 {
             self.alloc_segments(node, ty_id);
         }
@@ -363,7 +406,7 @@ impl TypeBuilder for BodyBuilder {
 
     fn alloc_segments(&mut self, node: Node, ty: TypeId) {
         for (seg, child) in node.named_children(&mut node.walk()).filter(|n| n.kind_id() == NodeKind::IDENTIFIER).enumerate() {
-            self.node_to_semantic.insert(NodeRange::from(&child), SemanticId::TypeSegment { ty, segment: seg as u8 });
+            self.expr_store.range_to_semantic.insert(NodeRange::from(&child), SemanticId::TypeSegment { ty, segment: seg as u8 });
         }
     }
 }
@@ -457,7 +500,7 @@ mod tests {
 
     fn build_maps_for_first_function(source: &str) -> (BodyMap, BodySourceMap) {
         let (db, file) = make_test_db(source);
-        let ast = db.parse(file);
+        let ast = db.ast(file);
         let root = ast.root();
         let fn_node = find_first_kind(root.node(), NodeKind::FUNCTION_DEFINITION)
             .expect("fixture should contain a function_definition node");
@@ -469,7 +512,7 @@ mod tests {
 
         let owner = BodyOwnerId::Function(FunctionId { file, id: fn_id });
 
-        let ast_root = db.parse(file).root();
+        let ast_root = db.ast(file).root();
         let ast_id_map = db.ast_id_map(file);
         let owner = ast_id_map.get(&ast_root, fn_id).unwrap().to_node();
 
@@ -488,7 +531,7 @@ mod tests {
             .expect("expected local declaration to exist");
 
         let type_id = *body_map.local(local_id).type_name();
-        &body_map.type_names[type_id]
+        &body_map.expr_store.types[type_id]
     }
 
     #[test]
@@ -507,11 +550,11 @@ mod tests {
         match local_type(&body_map, &source_map, "g") {
             TypeName::Mapping { key, value } => {
                 assert!(matches!(
-                    body_map.type_names[*key],
+                    body_map.expr_store.types[*key],
                     TypeName::Primitive(Primitive::Address)
                 ));
 
-                match &body_map.type_names[*value] {
+                match &body_map.expr_store.types[*value] {
                     TypeName::UserDefined(path) => {
                         assert_eq!(path.segments.len(), 1);
                         assert_eq!(path.segments[0].as_str(), "ContractType");
@@ -530,11 +573,11 @@ mod tests {
                 assert_eq!(fn_ty.ret.len(), 1);
 
                 assert!(matches!(
-                    body_map.type_names[fn_ty.params[0]],
+                    body_map.expr_store.types[fn_ty.params[0]],
                     TypeName::Primitive(Primitive::Uint(256))
                 ));
                 assert!(matches!(
-                    body_map.type_names[fn_ty.ret[0]],
+                    body_map.expr_store.types[fn_ty.ret[0]],
                     TypeName::Primitive(Primitive::Int(256))
                 ));
             }
@@ -547,21 +590,21 @@ mod tests {
                 size: Some(outer_size),
             } => {
                 assert!(matches!(
-                    body_map.exprs[*outer_size],
+                    body_map.expr_store.exprs[*outer_size],
                     Expr::Literal(Literal::Number(_))
                 ));
 
-                match &body_map.type_names[*outer_base] {
+                match &body_map.expr_store.types[*outer_base] {
                     TypeName::Array {
                         ty: inner_base,
                         size: Some(inner_size),
                     } => {
                         assert!(matches!(
-                            body_map.exprs[*inner_size],
+                            body_map.expr_store.exprs[*inner_size],
                             Expr::Literal(Literal::Number(_))
                         ));
                         assert!(matches!(
-                            body_map.type_names[*inner_base],
+                            body_map.expr_store.types[*inner_base],
                             TypeName::Primitive(Primitive::Uint(256))
                         ));
                     }
