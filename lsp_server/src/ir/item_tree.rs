@@ -59,7 +59,7 @@ pub struct Lowerer {
 impl Lowerer {
     pub fn lower(db: &dyn RootDatabase, file: File) -> ItemTree {
         let mut lowerer = Lowerer {
-            ast: db.parse(file),
+            ast: db.ast(file),
             ast_id_map: db.ast_id_map(file),
             top_level: Vec::new(),
             data: FxHashMap::default(),

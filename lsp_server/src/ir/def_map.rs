@@ -9,6 +9,7 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 
+use crate::ast::ImportId;
 use crate::ast::{ContractId, EnumId, ErasedAstId, ErrorId, EventId, FunctionId, ImportType, InterfaceId, LibraryId, ModifierId, StructId, VarId};
 use crate::ir::item_tree::{ItemId, Import, ItemTree};
 use crate::salsa::{FileId, RootDatabase, SourceRootId};
@@ -19,6 +20,7 @@ type ScopeId = Idx<Scope>;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefId {
     File(FileId),
+    Import(ImportId),
     Contract(ContractId),
     Interface(InterfaceId),
     Library(LibraryId),
@@ -35,6 +37,7 @@ impl DefId {
     pub fn ast_id(&self) -> Option<(FileId, ErasedAstId)> {
         Some(match self {
             DefId::File(_) => return None,
+            DefId::Import(i) => (i.file, i.id.erase()),
             DefId::Contract(c) => (c.file, c.id.erase()),
             DefId::Interface(i) => (i.file, i.id.erase()),
             DefId::Library(l) => (l.file, l.id.erase()),
@@ -72,15 +75,13 @@ pub enum Namespace {
     Error,
     Event,
     Variable,
-    Any,
 }
 
 impl Namespace {
     pub fn from(def: &DefId) -> Namespace {
-        match def {
-            DefId::File(_) | DefId::Contract(_) | DefId::Interface(_) | DefId::Library(_) | DefId::Struct(_) | DefId::Enum(_) => Namespace::Type,
-            DefId::Function(_) => Namespace::Function,
-            DefId::Modifier(_) => Namespace::Function,
+        match def {//TODO might remove imports from type namespace to its own.
+            DefId::File(_) | DefId::Import(_) | DefId::Contract(_) | DefId::Interface(_) | DefId::Library(_) | DefId::Struct(_) | DefId::Enum(_) => Namespace::Type,
+            DefId::Function(_) |DefId::Modifier(_)  => Namespace::Function,
             DefId::Event(_) => Namespace::Event,
             DefId::Error(_) => Namespace::Error,
             DefId::Var(_) => Namespace::Variable,
@@ -141,7 +142,16 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
         for &item_id in top_level.iter() {
             match item_id {
                 ItemId::Import(id) => {
+                    //@NOTE import defs are not collected in the defmap scopes
+                    //Which means nothing can resolve to an import!
                     let import = &self.item_tree[id];
+                    let def_data = DefData {
+                        name: None,
+                        scope: scope_id,
+                        child_scope: None,
+                    };
+                    let id = DefId::Import(ImportId { file: self.file, id });
+                    self.collector.defs.insert(id, def_data);
                     self.collector.unresolved.entry(self.file).or_default().imports.push(import.clone());
                 }
                 ItemId::Contract(id) => {
@@ -292,7 +302,6 @@ impl<'db> Collector<'db> {
     pub fn collect_defmap(db: &'db dyn RootDatabase, source_root_id: SourceRootId) -> DefMap {
         let files = source_root_id.source_root(db).files.as_ref();
 
-        //we should collect package data here ie remappings
         let mut collector = Collector {
             db,
             root: source_root_id,
@@ -301,10 +310,6 @@ impl<'db> Collector<'db> {
             defs: FxHashMap::default(),
             unresolved: FxHashMap::default(),
         };
-        //collect items from all the item trees in the sourceroot
-        //resolve imports: we can pull in other  defmaps from other roots
-        //resolve inheritance for all contracts? we can make this its own salsa query so it can be lazy
-        //linearizing for all contracts in root will be a lot of work
 
         for file in files.iter() {
             FileCollector {
@@ -326,7 +331,7 @@ impl<'db> Collector<'db> {
     }
 
 
-    /// Resolving imports is tricky because a global import imports its own imported global scope
+    /// Resolving imports is tricky because a global import brings its own imported global scope
     /// 
     /// i.e. A imports B but B imports C, so A auto imports C via B (i.e has C's global scope as well)
     /// 
@@ -360,7 +365,7 @@ impl<'db> Collector<'db> {
             // same root
             if self.root == other_root {
                 if self.unresolved.contains_key(&dep) {
-                    if chain.insert(dep){
+                    if chain.insert(dep){//@FIXME: fix to support multiple imports/import_directives from same file
                         match self.resolve(dep, chain) {
                             Resolver::Finished => {
                                 //it finished/resolved, dep should already remove itself from map
@@ -388,9 +393,9 @@ impl<'db> Collector<'db> {
         
         match resolver.resolve(file_id) {
             f @ Resolver::Finished=> {
-                //a cycle isn't we've seen this file before, but we've seen this file in this chain/dependency path before.
+                //a cycle isn't just "we've seen this file before", but we've seen this file in this chain/dependency path before.
                 // if a path resolves it is removed from the chain as we unwind
-                self.unresolved.remove(&file_id);//its empty atp
+                self.unresolved.remove(&file_id);//it should be empty atp
                 chain.remove(&file_id);
                 f
             }
