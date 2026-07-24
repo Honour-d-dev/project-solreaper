@@ -181,7 +181,18 @@ impl<'db> Resolver<'db> {
                 return Some(Self::resolution(def));
             } else {
                 let resolution = match scope.owner {
-                    id @ (DefId::Contract(_) | DefId::Interface(_)) => self.lookup_in_bases(id, name),
+                    id @ (DefId::Contract(_) | DefId::Interface(_)) => {
+                        match name.as_str() {
+                            "this" => Some(Resolution::Type(id)),
+                            "super" => {
+                                let bases = self.db.bases(id);
+                                let supr = bases.iter().nth(1)?;
+                                Some(Resolution::Type(*supr))
+                            }
+                            _ =>  self.lookup_in_bases(id, name)
+                        }
+                        
+                    },
                     DefId::File(f) => self.lookup_in_imports(f, name),
                     _ => None,
                 };
@@ -390,8 +401,11 @@ impl<'db> Resolver<'db> {
     pub fn infer_expr(&self, expr: ExprId, store: &ExprStore, sourcemap: Option<&BodySourceMap>) -> Option<Type> {
         match &store.exprs[expr] {
             Expr::Ident(name) => {
-                let scope = sourcemap.and_then(|sm| sm.expr_scopes.get(expr).copied());
-                let offset = sourcemap.and_then(|sm| sm.expr_to_node.get(expr).map(|r| r.start)).unwrap_or(0);
+                let (scope, offset) = match (name.as_str(), sourcemap) {
+                    ("this" | "super", _) => (None, 0),
+                    (_, None) => (None, 0),
+                    (_, Some(sm)) => (Some(sm.expr_scopes[expr]), sm.expr_to_node[expr].start) 
+                };
                 let res = self.resolve_name(name, scope, offset)?;
                 self.infer_type(res)
             },
