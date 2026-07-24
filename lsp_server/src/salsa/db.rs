@@ -133,10 +133,6 @@ impl SalsaDatabase {
         Packages::get(self).set_packages(self).to(packages.into());
     }
 
-    pub fn ast(&self, file: File) -> Arc<Ast> {
-        self.parse(file)
-    }
-
     pub fn rope(&self, file: File) -> Rope {
         file.text(self)
     }
@@ -198,6 +194,7 @@ impl SalsaDatabase {
                     CONTRACT_DEFINITION => Contract => ContractId,
                     INTERFACE_DEFINITION => Interface => InterfaceId,
                     LIBRARY_DEFINITION => Library => LibraryId,
+                    IMPORT_DIRECTIVE => Import => ImportId => break,
                     FUNCTION_DEFINITION => Function => FunctionId => break,
                     MODIFIER_DEFINITION => Modifier => ModifierId => break,
                     STRUCT_DEFINITION => Struct => StructId => break,
@@ -210,7 +207,6 @@ impl SalsaDatabase {
             }
             current = next;
         }
-        assert!(path.len()>= 2);
         path
     }
 

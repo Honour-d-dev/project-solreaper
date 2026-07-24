@@ -3,11 +3,12 @@ use triomphe::Arc;
 use crate::ast::{self, ToAstNode};
 use crate::ast::kinds::NodeKind;
 use crate::hir::body_map::{BodyBuilder, BodyMap, BodyOwnerId, BodySourceMap};
-use crate::hir::item_data::{EnumData, ErrorData, EventData, FunctionData, ItemBuilder, ModifierData, StructData, VarData};
+use crate::hir::item_data::{ContractData, EnumData, ErrorData, EventData, FunctionData, ImportData, InterfaceData, ItemBuilder, LibraryData, ModifierData, StructData, VarData};
 use crate::hir::resolver::{Context, Resolver};
 use crate::ir::def_map::DefId;
+use crate::salsa::interned_db::Id;
 use super::db::SalsaDatabase;
-use super::interned_db::{BodyOwner, DefWithBases, DefWithBasesId, Enum, Error, Event, Function, Modifier, Struct, Var};
+use super::interned_db::{BodyOwner, Contract, DefWithBases, DefWithBasesId, Enum, Error, Event, Function, Import, Interface, Library, Modifier, Struct, Var};
 use super::root_db::RootDatabase;
 
 #[salsa::tracked]
@@ -15,12 +16,12 @@ pub fn body_map<'db>(db: &'db dyn RootDatabase, owner: BodyOwner<'db>) -> (Arc<B
 
     let (owner, ast_root)  = match owner.id(db) {
         BodyOwnerId::Function(id) => {
-            let ast_root = db.parse(id.file).root();
+            let ast_root = db.ast(id.file).root();
             let ast_id_map = db.ast_id_map(id.file);
             (ast_id_map.get(&ast_root, id.id).unwrap().to_node(), ast_root)
         },
         BodyOwnerId::Modifier(id) => {
-            let ast_root = db.parse(id.file).root();
+            let ast_root = db.ast(id.file).root();
             let ast_id_map = db.ast_id_map(id.file);
             (ast_id_map.get(&ast_root, id.id).unwrap().to_node(), ast_root)
         },
@@ -93,34 +94,68 @@ pub fn modifier_data<'db>(db: &'db dyn RootDatabase, m: Modifier<'db>) -> Arc<Mo
 }
 
 #[salsa::tracked]
+pub fn contract_data<'db>(db: &'db dyn RootDatabase, c: Contract<'db>) -> Arc<ContractData> {
+    let id = c.id(db);
+    let ast_id_map = db.ast_id_map(id.file);
+    let root = db.root(id.file);
+    let contract = ast_id_map.get(&root, id.id).unwrap();
+    Arc::new(ItemBuilder::new(root).build_contract(&contract))
+}
+
+#[salsa::tracked]
+pub fn interface_data<'db>(db: &'db dyn RootDatabase, i: Interface<'db>) -> Arc<InterfaceData> {
+    let id = i.id(db);
+    let ast_id_map = db.ast_id_map(id.file);
+    let root = db.root(id.file);
+    let interface = ast_id_map.get(&root, id.id).unwrap();
+    Arc::new(ItemBuilder::new(root).build_interface(&interface))
+}
+
+#[salsa::tracked]
+pub fn library_data<'db>(db: &'db dyn RootDatabase, l: Library<'db>) -> Arc<LibraryData> {
+    let id = l.id(db);
+    let ast_id_map = db.ast_id_map(id.file);
+    let root = db.root(id.file);
+    let library = ast_id_map.get(&root, id.id).unwrap();
+    Arc::new(ItemBuilder::new(root).build_library(&library))
+}
+
+#[salsa::tracked]
+pub fn import_data<'db>(db: &'db dyn RootDatabase, i: Import<'db>) -> Arc<ImportData> {
+    let id = i.id(db);
+    let ast_id_map = db.ast_id_map(id.file);
+    let root = db.root(id.file);
+    let import = ast_id_map.get(&root, id.id).unwrap();
+    Arc::new(ItemBuilder::new(root).build_import(&import))
+}
+
+#[salsa::tracked]
 pub fn bases<'db>(db: &'db dyn HirDatabase, def: DefWithBases<'db>) -> Vec<DefId> {
     let id = def.id(db);
     let ctx = match id {
         DefWithBasesId::Contract(c) => {
             Context {
                 file: c.file,
-                node: db.root(c.file),
                 offset: 0,
-                containers: vec![DefId::Contract(c)],
+                container: DefId::Contract(c),
             }
         }
         DefWithBasesId::Interface(i) => {
             Context {
                 file: i.file,
-                node: db.root(i.file),
                 offset: 0,
-                containers: vec![DefId::Interface(i)],
+                container: DefId::Interface(i),
             }
         }
     };
     Resolver::build(db, &ctx).c3_linearize()
 }
 
-pub fn docs(db: &dyn RootDatabase, def: DefId) -> Option<String> {//TODO make tracked when we move ids into salsa
-    let (file, erased_id) = def.ast_id()?;
-    let ast = db.parse(file);
+#[salsa::tracked(lru=100)]
+pub fn docs<'db>(db: &'db dyn RootDatabase, def: Id<'db>) -> Option<String> {//TODO make tracked when we move ids into salsa
+    let (file, erased_id) = def.id(db).ast_id()?;
     let ast_id_map = db.ast_id_map(file);
-    let root = ast.root();
+    let root = db.root(file);
     let node = ast_id_map.get_node(&root, erased_id)?;
     
     let mut comments = Vec::new();
@@ -129,7 +164,7 @@ pub fn docs(db: &dyn RootDatabase, def: DefId) -> Option<String> {//TODO make tr
         if sibling.kind_id() != NodeKind::COMMENT {
             break;
         }
-        let text = sibling.utf8_text(ast.source().as_bytes()).unwrap_or("");
+        let text = root.text_by_range(sibling.byte_range());
         comments.push(text.to_string());
         current = sibling.prev_named_sibling();
     }
@@ -153,6 +188,10 @@ pub trait HirDatabase: RootDatabase {
     fn error_data(&self, id: ast::ErrorId) -> Arc<ErrorData>;
     fn modifier_data(&self, id: ast::ModifierId) -> Arc<ModifierData>;
     fn event_data(&self, id: ast::EventId) -> Arc<EventData>;
+    fn contract_data(&self, id: ast::ContractId) -> Arc<ContractData>;
+    fn interface_data(&self, id: ast::InterfaceId) -> Arc<InterfaceData>;
+    fn library_data(&self, id: ast::LibraryId) -> Arc<LibraryData>;
+    fn import_data(&self, id: ast::ImportId) -> Arc<ImportData>;
     fn bases(&self, def: DefId) -> Vec<DefId>;
     fn docs(&self, def: DefId) -> Option<String>;
 }
@@ -199,6 +238,22 @@ impl HirDatabase for SalsaDatabase {
         event_data(self, Event::new(self, id))
     }
 
+    fn contract_data(&self, id: ast::ContractId) -> Arc<ContractData> {
+        contract_data(self, Contract::new(self, id))
+    }
+
+    fn interface_data(&self, id: ast::InterfaceId) -> Arc<InterfaceData> {
+        interface_data(self, Interface::new(self, id))
+    }
+
+    fn library_data(&self, id: ast::LibraryId) -> Arc<LibraryData> {
+        library_data(self, Library::new(self, id))
+    }
+
+    fn import_data(&self, id: ast::ImportId) -> Arc<ImportData> {
+        import_data(self, Import::new(self, id))
+    }
+
     fn bases(&self, def: DefId) -> Vec<DefId> {
         let def = match def {
             DefId::Contract(c) => DefWithBases::new(self, DefWithBasesId::Contract(c)),
@@ -210,6 +265,6 @@ impl HirDatabase for SalsaDatabase {
     }
 
     fn docs(&self, def: DefId) -> Option<String> {
-        docs(self, def)
+        docs(self, Id::new(self, def))
     }
 }

@@ -54,7 +54,7 @@ pub trait RootDatabase: salsa::Database {
     fn package_config(&self, root_id: SourceRootId) -> &Package;
 
     fn ts_incremental_parse(&self, file: File) -> Tree;
-    fn parse(&self, file: File) -> Arc<Ast>;
+    fn ast(&self, file: File) -> Arc<Ast>;
     fn root(&self, file: File) -> AstNode;
     fn ast_id_map(&self, file: File) -> Arc<AstIdMap>;
     fn item_tree(&self, file: File) -> &ItemTree;
@@ -88,12 +88,12 @@ impl RootDatabase for SalsaDatabase {
         self.parser.lock().parse(self, file)
     }
 
-    fn parse(&self, file: File) -> Arc<Ast> {
+    fn ast(&self, file: File) -> Arc<Ast> {
         parse(self, file)
     }
 
     fn root(&self, file: File) -> AstNode {
-        self.parse(file).root()
+        self.ast(file).root()
     }
 
     fn ast_id_map(&self, file: File) -> Arc<AstIdMap> {
