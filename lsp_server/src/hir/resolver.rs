@@ -1,14 +1,16 @@
 #![allow(unused)]
 
+use la_arena::Arena;
 use serde::de;
 use triomphe::Arc;
 
 use crate::ast::kinds::NodeKind;
-use crate::ast::{self, AstNode, ContractId, FunctionId, HasBases, ModifierId, NodeRange};
-use crate::ir::def_map::{DefId, DefMap, Namespace};
-use crate::hir::body_map::{BodyMap, BodyOwnerId, BodySourceMap, ByteOffset, Local, LocalId, ScopeId, SemanticId};
-use crate::hir::exprs::{Expr, ExprId, Literal, Name};
-use crate::hir::types::{Path, Primitive, Type, TypeId, TypeName};
+use crate::ast::{self, AstNode, ContractId, EnumId, ErrorId, EventId, FunctionId, HasBases, ImportId, InterfaceId, LibraryId, ModifierId, NodeRange, StructId, VarId};
+use crate::ir::def_map::{DefData, DefId, DefMap, Namespace, ScopeData};
+use crate::hir::body_map::{BodyMap, BodyOwnerId, BodySourceMap, ByteOffset, Local, LocalId, ScopeId, SemanticId, VariableKind};
+use crate::hir::exprs::{BinaryOp, Expr, ExprId, Literal, Name};
+use crate::hir::item_data::{ExprStore, FieldId, FunctionData, VariantId};
+use crate::hir::types::{Mutability, Path, Primitive, Type, TypeId, TypeName, Visibility, Fn};
 use crate::salsa::{File, FileId, HirDatabase, RootDatabase, SalsaDb};
 
 
@@ -24,13 +26,15 @@ use crate::salsa::{File, FileId, HirDatabase, RootDatabase, SalsaDb};
 - then builds inference context
 */
 
+#[derive(Clone, PartialEq, Eq)]
 pub enum Resolution {
     Local(LocalId),
     Def(DefId),
     Primitive(Primitive),
     Type(DefId),
     Defs(Box<[DefId]>),
-    // Field/Member(FieldId)
+    Variant(EnumId, VariantId),
+    Field(StructId, FieldId),
 }
 
 struct BodyCtx {
@@ -40,16 +44,15 @@ struct BodyCtx {
 
 pub struct Context {
     pub file: File,
-    pub node: AstNode,
     pub offset: ByteOffset,
-    pub containers: Vec<DefId>,
+    pub container: DefId,
 }
 
 impl Context {
     pub fn new(db: &SalsaDb, file: File, offset: ByteOffset) -> Context {
         let node = db.node_at(file, offset).unwrap();
         let mut containers = db.enclosing_containers(node.node(), file);
-        Context { file, node, offset, containers }
+        Context { file, offset, container: containers.last().unwrap().clone() }
     }
 
 }
@@ -59,34 +62,37 @@ impl Context {
 pub struct Resolver<'db> {
     db: &'db dyn HirDatabase,
     defmap: Arc<DefMap>,
-    file: File,// for top level items file is container, but we need to distinguish for base resolution
+    pub file: File,// for top level items file is container, but we need to distinguish for base resolution
     container: DefId,
     body: Option<BodyCtx>,
 }
 
 impl<'db> Resolver<'db> {
     pub fn build(db: &'db dyn HirDatabase, ctx: &Context) -> Resolver<'db> {
-        let mut containers = ctx.containers.iter().rev();
-        let (body, &container) = match containers.next().unwrap() {
+        let body = match ctx.container {
             DefId::Function(id) => {
-                let (body, sourcemap) = db.body_and_source_map(BodyOwnerId::Function(*id));
+                let (body, sourcemap) = db.body_and_source_map(BodyOwnerId::Function(id));
                 let body = BodyCtx {
                     body,
                     sourcemap,
                 };
-                (Some(body), containers.next().unwrap())
+                Some(body)
             }
             DefId::Modifier(id) => {
-                let (body, sourcemap) = db.body_and_source_map(BodyOwnerId::Modifier(*id));
+                let (body, sourcemap) = db.body_and_source_map(BodyOwnerId::Modifier(id));
                 let body = BodyCtx {
                     body,
                     sourcemap,
                 };
-                (Some(body), containers.next().unwrap())
+                Some(body)
             }
-            default => (None, containers.next().unwrap_or(default))// To accomodate linearization init
+            default => None
         };
+
         let defmap = db.root_def_map(db.file_source_root(ctx.file));
+        let data = defmap.defs.get(&ctx.container).unwrap();
+        let container = defmap.scopes[data.scope].owner;
+
         Resolver { db, defmap, file: ctx.file, container, body }
     }
 
@@ -98,8 +104,45 @@ impl<'db> Resolver<'db> {
         self.body.as_ref().map(|b| b.sourcemap.as_ref())
     }
 
+    /// In some cases we can't make assumptions on the defmap since resolution can jump between defmaps
+    /// Used When resulution may not be in the current defmap
+    fn def_map(&self, def: &DefId) -> Arc<DefMap>  {
+        let file = match def {
+            DefId::File(file) |
+            DefId::Import(ImportId { file, ..}) |
+            DefId::Contract(ContractId { file, .. }) |
+            DefId::Interface(InterfaceId { file, .. }) |
+            DefId::Library(LibraryId { file, .. }) |
+            DefId::Enum(EnumId { file, .. }) |
+            DefId::Struct(StructId { file, .. }) |
+            DefId::Function(FunctionId { file, .. }) |
+            DefId::Modifier(ModifierId { file, .. }) |
+            DefId::Event(EventId { file, .. }) |
+            DefId::Error(ErrorId{file, ..}) |
+            DefId::Var(VarId{file, ..}) => file,
+        };
+        if *file == self.file {
+            self.defmap.clone()
+        } else {
+            self.db.root_def_map(self.db.file_source_root(*file))
+        }
+    }
+
     pub fn expr_scope(&self, expr_id: ExprId) -> Option<ScopeId> {
         self.sourcemap()?.expr_scopes.get(expr_id).copied()
+    }
+
+    #[inline]
+    fn resolution(def: &ScopeData) -> Resolution {
+        match def.namespace {
+            Namespace::Type => Resolution::Type(def.defs[0]),
+            _ => {
+                match def.defs.len() {
+                    1 => Resolution::Def(def.defs[0]),
+                    _ => Resolution::Defs(def.defs.clone().into_boxed_slice())
+                }
+            }
+        }
     }
 
     
@@ -135,10 +178,7 @@ impl<'db> Resolver<'db> {
 
         loop {
             if let Some(def) = scope.by_name.get(name) {
-                return match def.defs.len() {
-                    1 => Some(Resolution::Def(def.defs[0])),
-                    _ => Some(Resolution::Defs(def.defs.clone().into_boxed_slice()))
-                };
+                return Some(Self::resolution(def));
             } else {
                 let resolution = match scope.owner {
                     id @ (DefId::Contract(_) | DefId::Interface(_)) => self.lookup_in_bases(id, name),
@@ -153,13 +193,14 @@ impl<'db> Resolver<'db> {
         }
     }
 
+
     /// Strictly type path resolution i.e. A.B.C
     /// Returns None if any part of the path is not a type
-    fn resolve_path(&self, path: &[Name]) -> Option<Resolution> {
+    pub fn resolve_path(&self, path: &[Name]) -> Option<Resolution> {
         let mut resolution = self.resolve_type_name(path.first()?)?;
         for name in path.iter().skip(1) {
             let Resolution::Type(ty) = resolution else {return None;};
-            resolution = self.lookup_type(&ty, name)?;
+            resolution = self.lookup_type(&ty, name)?;//or  else lookup name? enum variants
         }
         Some(resolution)
     }
@@ -193,9 +234,10 @@ impl<'db> Resolver<'db> {
     /// Look up a nested type in its parent
     /// Similar to `lookup_name` but we can take advantage of the fact that we're looking for a type to be more efficient
     /// However, Enum variants (although types) should use `lookup_name` instead since the field itself is the type
-    fn lookup_type(&self, def: &DefId, name: &Name) -> Option<Resolution> {
-        let data = &self.defmap.defs[def];//FIXME: we should not assume defmap here always check the defid
-        let scope = &self.defmap.scopes[data.child_scope?];//must have child scope
+    pub fn lookup_type(&self, def: &DefId, name: &Name) -> Option<Resolution> {
+        let defmap = self.def_map(def);
+        let data = &defmap.defs[def];
+        let scope = &defmap.scopes[data.child_scope?];
 
         if let Some(def) = scope.by_name.get(name) && def.namespace == Namespace::Type {
             return Some(Resolution::Type(def.defs[0]));
@@ -215,28 +257,26 @@ impl<'db> Resolver<'db> {
     /// Look up a name in a parent definition
     /// Mainly for looking up values (functions, variables, events, etc.)
     /// for types see lookup_type.
-    fn lookup_name(&self, def: &DefId, name: &Name) -> Option<Resolution> {
-        let data = &self.defmap.defs[def];
+    pub fn lookup_name(&self, def: &DefId, name: &Name) -> Option<Resolution> {
+        let defmap = self.def_map(def);
+        let data = &defmap.defs[def];
     
         if let Some(scope_id) = data.child_scope && 
-           let Some(def) = self.defmap.scopes[scope_id].by_name.get(name) {
-            match def.defs.len() {
-                1 => Some(Resolution::Def(def.defs[0])),
-                _ => Some(Resolution::Defs(def.defs.clone().into_boxed_slice()))
-            }
+           let Some(def) = defmap.scopes[scope_id].by_name.get(name) {
+            Some(Self::resolution(def))
         } else {
             match def {
                 DefId::Enum(e) => {
-                    //get enum data
-                    // lookup in enum
-                    // return
-                    None
+                    let enum_data = self.db.enum_data(*e);
+                    enum_data.variants.iter()
+                        .find(|(_, v)| v.name == *name)
+                        .map(|(id, _)| Resolution::Variant(*e, id))
                 }
                 DefId::Struct(s) => {
-                    //get struct data
-                    // lookup in struct
-                    // return
-                    None
+                    let struct_data = self.db.struct_data(*s);
+                    struct_data.fields.iter()
+                        .find(|(_, f)| f.name == *name)
+                        .map(|(id, _)| Resolution::Field(*s, id))
                 }
                 id @ (DefId::Contract(_) | DefId::Interface(_)) => {
                     self.lookup_in_bases(*id, name)
@@ -249,27 +289,20 @@ impl<'db> Resolver<'db> {
         }
     }
 
+    
 
     fn lookup_in_bases(&self, id: DefId, name: &Name) -> Option<Resolution> {
         //get linearized bases and lookup bases
         let bases = self.db.bases(id);
         for base in bases.iter().skip(1) {
-            let file = match base {
-                DefId::Contract(c) => c.file,
-                DefId::Interface(i) => i.file,
-                _ => continue
-            };
-            let base_defmap = self.db.root_def_map(self.db.file_source_root(file));
+            let base_defmap = self.def_map(base);
             let d = &base_defmap.defs[base];
             let Some(child_scope) = d.child_scope else {
                 continue;
             };
             let s = &base_defmap.scopes[child_scope];
             if let Some(def) = s.by_name.get(name) {
-                return match def.defs.len() {
-                    1 => Some(Resolution::Def(def.defs[0])),
-                    _ => Some(Resolution::Defs(def.defs.clone().into_boxed_slice()))
-                };
+                return Some(Self::resolution(def));
             }
         }
         None
@@ -277,19 +310,13 @@ impl<'db> Resolver<'db> {
 
     fn lookup_in_imports(&self, file: File, name: &Name) -> Option<Resolution> {
         //get imported scopes and lookup imports
-        let file_data = if file == self.file { 
-            &self.defmap.files[&file] 
-        } else { 
-            &self.db.root_def_map(self.db.file_source_root(file)).files[&file]
-        };
+        let defmap = self.def_map(&DefId::File(file));
+        let file_data = &defmap.files[&file];
         for scope_entry in file_data.imported_scopes.iter() {
             let defmap = self.db.root_def_map(scope_entry.root);
             let scope = &defmap.scopes[scope_entry.scope];
             if let Some(def) = scope.by_name.get(name) {
-                return match def.defs.len() {
-                    1 => Some(Resolution::Def(def.defs[0])),
-                    _ => Some(Resolution::Defs(def.defs.clone().into_boxed_slice()))
-                };
+                return Some(Self::resolution(def));
             }
         }
         None
@@ -360,69 +387,229 @@ impl<'db> Resolver<'db> {
 
 
 
-    fn infer_expr(&self, expr: ExprId) -> Option<Type> {
-        match &self.body()?.exprs[expr] {
+    pub fn infer_expr(&self, expr: ExprId, store: &ExprStore, sourcemap: Option<&BodySourceMap>) -> Option<Type> {
+        match &store.exprs[expr] {
             Expr::Ident(name) => {
-                let scope = self.sourcemap()?.expr_scopes[expr];
-                let offset = self.sourcemap()?.expr_to_node[expr].start;
-                let res = self.resolve_name(name, Some(scope), offset)?;
-                self.infer_type(res);
+                let scope = sourcemap.and_then(|sm| sm.expr_scopes.get(expr).copied());
+                let offset = sourcemap.and_then(|sm| sm.expr_to_node.get(expr).map(|r| r.start)).unwrap_or(0);
+                let res = self.resolve_name(name, scope, offset)?;
+                self.infer_type(res)
+            },
+            Expr::Path(p) => None,
+            Expr::Literal(l) => Some(Type::Primitive(Self::literal_primitive(l))),
+            Expr::Binary { left, .. } => self.infer_expr(*left, store, sourcemap),
+            Expr::Member { obj, prop } => {
+                let ty = self.infer_expr(*obj, store, sourcemap)?;
+                self.infer_lookup_type(ty, prop)
             }
-            Expr::Literal(l) => {
-                return Some(Self::literal_type(l));
+            Expr::Array { base, index: _ } => {
+                let ty = self.infer_expr(*base, store, sourcemap)?;
+                let Type::Array{ ty: base, .. } = ty else { return None; };
+                Some(*base)
             }
-            Expr::Member {obj, prop } => {
-                let ty = self.infer_expr(*obj)?;
-                return self.infer_lookup_type(ty, prop);
-            }
-            Expr::Array { base, index } => {
-                //Array expressions resolve to the base/underlying type, because array exprs are index/access exprs e.g. a[2]
-                let ty = self.infer_expr(*base)?;
-                let Type::Array(base) = ty else {return None;};
-                return Some(*base);
-            }
-            Expr::Call { callee, args } => {//a(), a.b(), a()() --a returns a fn, a[]() --a is an array of fn pointers
-                //call exprs resolve to their return type, but in the event of an overload how dowe resolve to exact?
-                let scope = self.sourcemap()?.expr_scopes[*callee];//for fn pointers ie local fns
-                let offset = self.sourcemap()?.expr_to_node[*callee].start;
-                
-                
+            Expr::Call { callee, args } => {
+                let res = self.resolve_callee(*callee, store, sourcemap)?;
+                let arg_types: Vec<Type> = args.iter()
+                    .filter_map(|a| self.infer_expr(*a, store, sourcemap))
+                    .collect();
+                if arg_types.len() != args.len() {
+                    return None;
+                }
+                match res {
+                    Resolution::Def(DefId::Function(id)) => {
+                        let fn_data = self.db.function_data(id);
+                        let param_types = self.param_types(&fn_data);
+                        if param_types.len() != arg_types.len() {
+                            return None;
+                        }
+                        if arg_types.iter().zip(param_types.iter()).all(|(a, p)| a.converts_to(p).is_some()) {
+                            self.fn_return_type(&fn_data)
+                        } else {
+                            None
+                        }
+                    }
+                    Resolution::Defs(candidates) => {
+                        let def = self.resolve_overload(&candidates[..], &arg_types)?;
+                        match def {
+                            DefId::Function(id) => {
+                                let fn_data = self.db.function_data(id);
+                                self.fn_return_type(&fn_data)
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,//Errors and Event calls dont resolve to a type
+                }
             }
         }
-        None
+    }
+
+    pub fn resolve_callee(&self, callee: ExprId, store: &ExprStore, sourcemap: Option<&BodySourceMap>) -> Option<Resolution> {
+        match &store.exprs[callee] {
+            Expr::Ident(name) => {
+                let scope = sourcemap.and_then(|sm| sm.expr_scopes.get(callee).copied());
+                let offset = sourcemap.and_then(|sm| sm.expr_to_node.get(callee).map(|r| r.start)).unwrap_or(0);
+                self.resolve_name(name, scope, offset)
+            }
+            Expr::Member { obj, prop } => {
+                let ty = self.infer_expr(*obj, store, sourcemap)?;
+                let res = self.lookup_name(&match ty {
+                    Type::UserDefined(def) => def,
+                    _ => return None,
+                }, prop)?;
+                Some(res)
+            }//@TODO add more calle support call/array/literal?
+            _ => None,
+        }
+    }
+
+    pub fn fn_return_type(&self, fn_data: &FunctionData) -> Option<Type> {
+        let ret: Vec<Type> = fn_data.ret_params.iter()
+            .filter_map(|p| self.lower_type_name(*fn_data.parameters[*p].type_name(), &fn_data.expr_store))
+            .collect();
+        match ret.len() {
+            0 => None,
+            1 => Some(ret.into_iter().next().unwrap()),
+            _ => Some(Type::Tuple(ret.into_boxed_slice())),
+        }
+    }
+
+    pub fn param_types(&self, fn_data: &FunctionData) -> Vec<Type> {
+        fn_data.arg_params.iter()
+            .filter_map(|p| self.lower_type_name(*fn_data.parameters[*p].type_name(), &fn_data.expr_store))
+            .collect()
+    }
+
+    pub fn def_param_types(&self, def: DefId) -> Vec<Type> {
+        match def {
+            DefId::Function(id) => {
+                let fn_data = self.db.function_data(id);
+                self.param_types(&fn_data)
+            }
+            DefId::Event(id) => {
+                let data = self.db.event_data(id);
+                data.parameters.iter()
+                    .filter_map(|(_, p)| self.lower_type_name(*p.type_name(), &data.expr_store))
+                    .collect()
+            }
+            DefId::Error(id) => {
+                let data = self.db.error_data(id);
+                data.parameters.iter()
+                    .filter_map(|(_, p)| self.lower_type_name(*p.type_name(), &data.expr_store))
+                    .collect()
+            }
+            DefId::Modifier(id) => {
+                let data = self.db.modifier_data(id);
+                data.parameters.iter()
+                    .filter_map(|(_, p)| self.lower_type_name(*p.type_name(), &data.expr_store))
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn resolve_overload(&self, candidates: &[DefId], arg_types: &[Type]) -> Option<DefId> {
+        let mut best: Option<(DefId, u32)> = None;
+        'candidates: for def in candidates {
+            let param_types = self.def_param_types(*def);
+            if param_types.len() != arg_types.len() {
+                continue;
+            }
+            let mut total_cost: u32 = 0;
+            'cost: for (arg, param) in arg_types.iter().zip(param_types.iter()) {
+                match arg.converts_to(param) {
+                    Some(cost) => total_cost += cost as u32,
+                    None => { continue 'candidates; }
+                }
+            }
+            match best {
+                Some((_, prev_cost)) if total_cost >= prev_cost => {}
+                _ => best = Some((*def, total_cost)),
+            }//make this more robust, candidates with equal costs are returned in the error branch
+        }
+        best.map(|(def, _)| def)
+    }
+
+    pub fn infer_lookup_type(&self, ty: Type, name: &Name) -> Option<Type> {
+        match ty {
+            Type::UserDefined(ty) => {
+                let res = self.lookup_name(&ty, name)?;
+                self.infer_type(res)
+            }
+            Type::Primitive(p) => {
+                // TODO: impl primitive member lookups
+                None
+            }
+            Type::Array{ ty: a, .. } => {
+                // TODO: impl array members i.e. push/pop etc
+                None
+            }
+            Type::Mapping { key, value } => {
+                // Mapping it self shouldn't/doesn't have members i believe
+                None
+            }
+            Type::Fn(_) => None,
+            Type::Tuple(_) => None,
+        }
     }
 
 
-    fn infer_type(&self, res: Resolution) -> Option<Type> {
+    pub fn infer_type(&self, res: Resolution) -> Option<Type> {
         match res {
             Resolution::Local(l) => {
-                let local = &self.body()?.locals[l];
-                let ty_id = *local.type_name();
-                return self.lower_type_name(ty_id);
+                let body = self.body()?;
+                let local = &body.locals[l];
+                self.lower_type_name(*local.type_name(), &body.expr_store)
             }
             Resolution::Def(d) => {
-                //TODO get the type of the item
-                //we would need itemData. eg if statevar get staevarData and get type
+                match Namespace::from(&d) {
+                    Namespace::Type => Some(Type::UserDefined(d)),
+                    Namespace::Variable => {
+                        let DefId::Var(id) = d else { return None; };
+                        let var = self.db.var_data(id);
+                        self.lower_type_name(var.type_name, &var.expr_store)
+                    }
+                    Namespace::Function => {
+                        let DefId::Function(id) = d else { return None; };
+                        let fn_data = self.db.function_data(id);
+                        let params = fn_data.arg_params.iter()
+                            .filter_map(|p| self.lower_type_name(*fn_data.parameters[*p].type_name(), &fn_data.expr_store))
+                            .collect::<Box<_>>();
+                        let ret = fn_data.ret_params.iter()
+                            .filter_map(|p| self.lower_type_name(*fn_data.parameters[*p].type_name(), &fn_data.expr_store))
+                            .collect::<Box<_>>();
+                        let f = Fn {
+                            params,
+                            ret,
+                            vis: fn_data.vis,
+                            mutability: fn_data.mutability
+                        };
+                        Some(Type::Fn(f))
+                    }
+                    Namespace::Error | Namespace::Event => None,
+                }
             }
             Resolution::Type(ty) => {
-                return Some(Type::UserDefined(ty));
-
+                Some(Type::UserDefined(ty))
             }
             Resolution::Primitive(p) => {
-                return Some(Type::Primitive(p));
+                Some(Type::Primitive(p))
             }
-            Resolution::Defs(d) => {
-
+            Resolution::Defs(_) => None,
+            Resolution::Variant(enum_id, _) => {
+                Some(Type::UserDefined(DefId::Enum(enum_id)))
             }
-            //TODO this is where i'd handle the multi-resolutins ie Defs(Box<[DefId]>)
+            Resolution::Field(struct_id, field_id) => {
+                let struct_data = self.db.struct_data(struct_id);
+                let field = &struct_data.fields[field_id];
+                self.lower_type_name(field.type_name, &struct_data.expr_store)
+            }
         }
-        None
     }
     
-
-    fn lower_type_name(&self, ty_id: TypeId) -> Option<Type> {
-         let ty_name = &self.body()?.type_names[ty_id];
-         match ty_name {
+    /// lower typeId to actual type
+    fn lower_type_name(&self, ty_id: TypeId, store: &ExprStore) -> Option<Type> {
+         match &store.types[ty_id] {
             TypeName::Primitive(p) => {
                 Some(Type::Primitive(*p))
             }
@@ -431,55 +618,97 @@ impl<'db> Resolver<'db> {
                 self.infer_type(res)
             }
             TypeName::Array { ty, size } => {
-                let ty = self.lower_type_name(*ty)?;
-                Some(Type::Array(Box::new(ty)))
+                let ty = self.lower_type_name(*ty, store)?;
+                let size = size.and_then(|expr| self.eval_array_size(expr, store, None));
+                Some(Type::Array{ty: Box::new(ty), size})
             }
             TypeName::Mapping { key, value } => {
-                let key_ty = self.lower_type_name(*key)?;
-                let value_ty = self.lower_type_name(*value)?;
+                let key_ty = self.lower_type_name(*key, store)?;
+                let value_ty = self.lower_type_name(*value, store)?;
                 Some(Type::Mapping { key: Box::new(key_ty), value: Box::new(value_ty)})
             }
             TypeName::Fn(f) => {
                 let params = f.params.iter().filter_map(|p| {
-                    self.lower_type_name(*p)//using filtermap skips types that failed to lower, i want to return none instead
+                    self.lower_type_name(*p, store)
                 }).collect::<Box<_>>();
                 let ret = f.ret.iter().filter_map(|p| {
-                    self.lower_type_name(*p)
+                    self.lower_type_name(*p, store)
                 }).collect::<Box<_>>();
-                Some(Type::Fn { params, ret })
+                let f = Fn {
+                    params,
+                    ret,
+                    vis: f.vis,
+                    mutability: f.mutability
+                };
+                Some(Type::Fn(f))
+                
             }
         }
     }
 
-    fn infer_lookup_type(&self, ty: Type, name: &Name) -> Option<Type> {
-        match ty {
-            Type::UserDefined(ty) => {
-                let res = self.lookup_type(&ty, name)?;
-                self.infer_type(res)
+    fn eval_array_size(&self, expr: ExprId, store: &ExprStore, sourcemap: Option<&BodySourceMap>) -> Option<usize> {
+        match &store.exprs[expr] {
+            Expr::Literal(Literal::Number(n)) => n.parse::<usize>().ok(),
+            Expr::Binary { op, left, right } => {
+                let l = self.eval_array_size(*left, store, sourcemap)?;
+                let r = self.eval_array_size(*right, store, sourcemap)?;
+                match op {
+                    BinaryOp::Add => l.checked_add(r),
+                    BinaryOp::Sub => l.checked_sub(r),
+                    BinaryOp::Mul => l.checked_mul(r),
+                    BinaryOp::Div => if r != 0 { Some(l / r) } else { None },
+                    BinaryOp::Mod => if r != 0 { Some(l % r) } else { None },
+                    BinaryOp::Pow => (0..r).try_fold(1usize, |acc, _| acc.checked_mul(l)),
+                    BinaryOp::Shl => l.checked_shl(r as u32),
+                    BinaryOp::Shr => l.checked_shr(r as u32),
+                    _ => None,
+                }
             }
-            Type::Primitive(p) => {
-                // TODO: impl primitive member lookups
-                None
+            Expr::Ident(name) => {
+                let scope = sourcemap.and_then(|sm| sm.expr_scopes.get(expr).copied());
+                let offset = sourcemap.and_then(|sm| sm.expr_to_node.get(expr).map(|r| r.start)).unwrap_or(0);
+                let res = self.resolve_name(name, scope, offset)?;
+                self.eval_constant(res)
             }
-            Type::Array(a) => {
-                // TODO: impl array members i.e. push/pop etc
-                None
+            Expr::Member { obj, prop } => {
+                let ty = self.infer_expr(*obj, store, sourcemap)?;
+                let def = match ty {
+                    Type::UserDefined(def) => def,
+                    _ => return None,
+                };
+                let res = self.lookup_name(&def, prop)?;
+                self.eval_constant(res)
             }
-            Type::Mapping { key, value } => {
-                // Mapping it self shouldn't/doesn't have members i believe
-                None
+            _ => None,
+        }
+    }
+
+    fn eval_constant(&self, res: Resolution) -> Option<usize> {
+        match res {
+            Resolution::Def(DefId::Var(var_id)) => {
+                let var_data = self.db.var_data(var_id);
+                if var_data.kind != VariableKind::Const {
+                    return None;
+                }
+                let init = var_data.init?;
+                self.eval_array_size(init, &var_data.expr_store, None)
             }
-            Type::Fn { params, ret } => None
+            _ => None,
+        }
+    }
+
+
+    fn literal_primitive(l: &Literal) -> Primitive {
+        match l {
+            Literal::Number(_) => Primitive::Uint(256),
+            Literal::String(_) => Primitive::String,
+            Literal::Boolean(_) => Primitive::Boolean,
+            Literal::HexString(_) => Primitive::Bytes,
         }
     }
 
     fn literal_type(l: &Literal) -> Type {
-        match l {
-            Literal::Number(_) => Type::Primitive(Primitive::Uint(256)),
-            Literal::String(_) => Type::Primitive(Primitive::String),
-            Literal::Boolean(_) => Type::Primitive(Primitive::Boolean),
-            Literal::HexString(_) => Type::Primitive(Primitive::Bytes),
-        }
+        Type::Primitive(Self::literal_primitive(l))
     }
 
 }
@@ -488,14 +717,19 @@ impl<'db> Resolver<'db> {
 pub struct Inference<'db> {
     db: &'db dyn HirDatabase,
     resolver: Resolver<'db>,
+    arg_str: String,
 }
 
 impl<'db> Inference<'db> {
     pub fn new(db: &'db dyn HirDatabase, ctx: Context) -> Self {
         let resolver = Resolver::build(db, &ctx);
-        Self { db, resolver }
+        Self { db, resolver, arg_str: String::new() }
     }
 
+    
+    fn as_string(ty_id: TypeId, types: &Arena<TypeName>) -> String {
+        types[ty_id].to_string(types)
+    }
    
 }
 
