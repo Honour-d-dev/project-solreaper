@@ -72,6 +72,8 @@ impl NodeKind {
     pub const IF_STATEMENT: NodeKind = NodeKind(401);
     pub const WHILE_STATEMENT: NodeKind = NodeKind(403);
     pub const TRY_STATEMENT: NodeKind = NodeKind(408);
+    pub const DO_WHILE_STATEMENT: NodeKind = NodeKind(404);
+    pub const RETURN_STATEMENT: NodeKind = NodeKind(410);
     pub const EXPRESSION_STATEMENT: NodeKind = NodeKind(400);
 
     pub const TYPE_NAME: NodeKind = NodeKind(448);
@@ -85,13 +87,15 @@ impl NodeKind {
     //      CONTEXT NODES
     pub const EXPRESSION: NodeKind = NodeKind(427);
     pub const TUPLE_EXPRESSION: NodeKind = NodeKind(432);
-    pub const MODIFIER_INVOCATION: NodeKind = NodeKind(442);
+    pub const MODIFIER_INVOCATION: NodeKind = NodeKind(422);
     pub const REVERT_STATEMENT: NodeKind = NodeKind(407);
     pub const EMIT_STATEMENT: NodeKind = NodeKind(411);
     pub const CALL_EXPRESSION: NodeKind = NodeKind(445);
     pub const CALL_ARGUMENT: NodeKind = NodeKind(424);
+    pub const REVERT_ARGUMENTS: NodeKind = NodeKind(529);
     pub const MEMBER_EXPRESSION: NodeKind = NodeKind(437);
     pub const ARRAY_ACCESS: NodeKind = NodeKind(438);
+    pub const BINARY_EXPRESSION: NodeKind = NodeKind(434);
 
 
     pub const NUMBER_LITERAL: NodeKind = NodeKind(469);
@@ -140,6 +144,20 @@ impl From<FieldKind> for u16 {
     }
 }
 
+impl From<FieldKind> for std::num::NonZero<u16> {
+    #[inline]
+    fn from(kind: FieldKind) -> Self {
+        std::num::NonZero::new(kind.0).expect("FieldKind must be non-zero")
+    }
+}
+
+impl From<std::num::NonZero<u16>> for FieldKind {
+    #[inline]
+    fn from(id: std::num::NonZero<u16>) -> Self {
+        Self(id.get())
+    }
+}
+
 impl PartialEq<FieldKind> for u16 {
     #[inline]
     fn eq(&self, other: &FieldKind) -> bool {
@@ -166,15 +184,15 @@ impl FieldKind {
     // pub const INITIAL: FieldKind = FieldKind(15);
     // pub const KEY_IDENTIFIER: FieldKind = FieldKind(16);
     pub const KEY_TYPE: FieldKind = FieldKind(17);
-    // pub const LEFT: FieldKind = FieldKind(18);
+    pub const LEFT: FieldKind = FieldKind(18);
     pub const LOCATION: FieldKind = FieldKind(19);
     pub const NAME: FieldKind = FieldKind(20);
     pub const OBJECT: FieldKind = FieldKind(21);
-    // pub const OPERATOR: FieldKind = FieldKind(22);
+    pub const OPERATOR: FieldKind = FieldKind(22);
     pub const PARAMETERS: FieldKind = FieldKind(23);
     pub const PROPERTY: FieldKind = FieldKind(24);
     pub const RETURN_TYPE: FieldKind = FieldKind(25);
-    // pub const RIGHT: FieldKind = FieldKind(26);
+    pub const RIGHT: FieldKind = FieldKind(26);
     pub const SOURCE: FieldKind = FieldKind(27);
     pub const TO: FieldKind = FieldKind(28);
     pub const TYPE: FieldKind = FieldKind(29);

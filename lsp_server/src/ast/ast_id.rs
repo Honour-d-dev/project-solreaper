@@ -229,13 +229,16 @@ impl NodePtr {
 
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImportId {
+    pub file: FileId,
+    pub id: AstId<ast::Import>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ContractId {
     pub file: FileId,
     pub id: AstId<ast::Contract>
 }
-
-//i should be abe to go from contractId <-> ItemId
-//by wraping/unwraping internal item
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InterfaceId {

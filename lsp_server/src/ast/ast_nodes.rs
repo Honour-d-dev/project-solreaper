@@ -256,8 +256,6 @@ impl Import {
             }
         }
 
-        //FIXME: matching on the last name and symbol can be sketchy
-        // for something like: import {* as X, y} from ./path Is this valid syntax??
         match (name, alias) {
             (name, alias) if !name.is_empty()  => ImportType::Named { symbols },
             (name, alias) if name.is_empty() && alias.is_empty() => ImportType::Full,
