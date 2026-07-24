@@ -1,4 +1,6 @@
-use la_arena::Idx;
+use std::{fmt, format};
+
+use la_arena::{Arena, Idx};
 use smallvec::SmallVec;
 use tree_sitter::Node;
 use crate::ast::kinds::{FieldKind, NodeKind};
@@ -7,19 +9,64 @@ use crate::hir::exprs::{ExprBuilder, ExprId, Name};
 
 pub type TypeId = Idx<TypeName>;
 
+// type FnTypeName = Fn<TypeId>;
+
 #[derive(PartialEq, Eq)]
 pub enum Type {
     Primitive(Primitive),
     UserDefined(DefId),
-    Array(Box<Type>),
+    Array{ty: Box<Type>, size: Option<usize>},
     Mapping {
         key: Box<Type>,
         value: Box<Type>
     },
-    Fn{
-        params: Box<[Type]>,
-        ret: Box<[Type]>
-    },//resolves to return type
+    Fn(Fn<Type>),//resolves to return type
+    Tuple(Box<[Type]>),
+}
+
+impl Type {
+    /// Returns the cost of implicitly converting `self` to `target`.
+    /// `None` means no implicit conversion is possible.
+    /// Cost 0 = identical, higher = more lossy/risky.
+    pub fn converts_to(&self, target: &Type) -> Option<u8> {
+        match (self, target) {
+            (Type::Primitive(a), Type::Primitive(b)) => a.converts_to(b),
+            (Type::UserDefined(a), Type::UserDefined(b)) if a == b => Some(0),
+            (Type::Array { ty: a, size: sa }, Type::Array { ty: b, size: sb }) => {
+                let cost = a.converts_to(b)?;
+                if sa == sb { Some(cost) } else { None }
+            }
+            (Type::Mapping { key: ka, value: va }, Type::Mapping { key: kb, value: vb }) => {
+                let kc = ka.converts_to(kb)?;
+                let vc = va.converts_to(vb)?;
+                Some(kc.saturating_add(vc))
+            }
+            (Type::Fn(a), Type::Fn(b)) => {
+                if a.params.len() != b.params.len() || a.ret.len() != b.ret.len() {
+                    return None;
+                }
+                let mut cost = 0u8;
+                for (ap, bp) in a.params.iter().zip(b.params.iter()) {
+                    cost = cost.saturating_add(ap.converts_to(bp)?);
+                }
+                for (ar, br) in a.ret.iter().zip(b.ret.iter()) {
+                    cost = cost.saturating_add(ar.converts_to(br)?);
+                }
+                Some(cost)
+            }
+            (Type::Tuple(a), Type::Tuple(b)) => {
+                if a.len() != b.len() {
+                    return None;
+                }
+                let mut cost = 0u8;
+                for (x, y) in a.iter().zip(b.iter()) {
+                    cost = cost.saturating_add(x.converts_to(y)?);
+                }
+                Some(cost)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -34,7 +81,7 @@ pub enum TypeName {
         key: TypeId,
         value: TypeId
     },
-    Fn(FnType),//function pointers
+    Fn(Fn<TypeId>),//function pointers
 }
 
 impl TypeName {
@@ -43,6 +90,59 @@ impl TypeName {
         match self {
             TypeName::UserDefined(path) => path.segments.len(),
             _ => 0,
+        }
+    }
+
+    pub fn to_string(&self, arena: &Arena<TypeName>) -> String {
+        match self {
+            TypeName::Primitive(p) => p.to_string(),
+            TypeName::UserDefined(path) => path
+                .segments
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("."),
+            TypeName::Array { ty, size } => {
+                let base = arena[*ty].to_string(arena);
+                match size {
+                    Some(_) => format!("{}[_]", base),
+                    None => format!("{}[]", base),
+                }
+            }
+            TypeName::Mapping { key, value } => {
+                format!(
+                    "mapping({} => {})",
+                    arena[*key].to_string(arena),
+                    arena[*value].to_string(arena)
+                )
+            }
+            TypeName::Fn(f) => {
+                let params = f
+                    .params
+                    .iter()
+                    .map(|&p| arena[p].to_string(arena))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = f
+                    .ret
+                    .iter()
+                    .map(|&r| arena[r].to_string(arena))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let mut s = format!("function({})", params);
+                if f.vis != Visibility::Internal {
+                    s.push(' ');
+                    s.push_str(f.vis.as_str());
+                }
+                if f.mutability != Mutability::NonPayable {
+                    s.push(' ');
+                    s.push_str(f.mutability.as_str());
+                }
+                if !f.ret.is_empty() {
+                    s.push_str(&format!(" returns ({})", ret));
+                }
+                s
+            }
         }
     }
 }
@@ -64,7 +164,47 @@ pub enum Primitive {
     Unknown
 }
 
+impl fmt::Display for Primitive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Primitive::Address => write!(f, "address"),
+            Primitive::Boolean => write!(f, "bool"),
+            Primitive::Bytes => write!(f, "bytes"),
+            Primitive::String => write!(f, "string"),
+            Primitive::Uint(n) => write!(f, "uint{n}"),
+            Primitive::Int(n) => write!(f, "int{n}"),
+            Primitive::FixedBytes(n) => write!(f, "bytes{n}"),
+            Primitive::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
 impl Primitive {
+    /// Returns the cost of implicitly converting `self` to `target`.
+    /// `None` means no implicit conversion is possible.
+    pub fn converts_to(&self, target: &Primitive) -> Option<u8> {
+        match (self, target) {
+            (a, b) if a == b => Some(0),
+            // uint widening: uintN -> uintM where M >= N
+            (Primitive::Uint(n), Primitive::Uint(m)) if *m >= *n => Some(1),
+            // int widening: intN -> intM where M >= N
+            (Primitive::Int(n), Primitive::Int(m)) if *m >= *n => Some(1),
+            // int -> uint: only intN -> uintM where M > N (sign bit needs room)
+            (Primitive::Int(n), Primitive::Uint(m)) if *m > *n => Some(2),
+            // fixed bytes widening: bytesN -> bytesM where M >= N
+            (Primitive::FixedBytes(n), Primitive::FixedBytes(m)) if *m >= *n => Some(1),
+            // address <-> bytes20
+            (Primitive::Address, Primitive::FixedBytes(20)) => Some(1),
+            (Primitive::FixedBytes(20), Primitive::Address) => Some(1),
+            // bytes1 -> bytes (dynamic)
+            (Primitive::FixedBytes(n), Primitive::Bytes) if *n <= 32 => Some(1),
+            // string literals -> bytes/string
+            (Primitive::String, Primitive::Bytes) => Some(1),
+            (Primitive::Bytes, Primitive::String) => Some(1),
+            _ => None,
+        }
+    }
+
     #[inline]
     pub fn parse(ty: &str) -> Primitive {
         match ty {
@@ -90,15 +230,26 @@ impl Primitive {
     }
 }
 
-#[derive(Default, PartialEq, Eq)]
-pub struct FnType {
+#[derive(PartialEq, Eq)]
+pub struct Fn<T> {
     pub vis: Visibility,
     pub mutability: Mutability,
-    pub params: Box<[TypeId]>,
-    pub ret: Box<[TypeId]>,
+    pub params: Box<[T]>,
+    pub ret: Box<[T]>,
 }
 
-#[derive(Default, PartialEq, Eq)]
+impl<T> Default for Fn<T> {
+    fn default() -> Self {
+        Self {
+            vis: Visibility::default(),
+            mutability: Mutability::default(),
+            params: Box::default(),
+            ret: Box::default(),
+        }
+    }
+}
+
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
 pub enum Visibility {
     #[default]
     Internal,
@@ -117,9 +268,19 @@ impl Visibility {
             _ => Visibility::Internal,
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Visibility::Internal => "internal",
+            Visibility::Public => "public",
+            Visibility::Private => "private",
+            Visibility::External => "external",
+        }
+    }
+
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
 pub enum Mutability {
     #[default]
     NonPayable,
@@ -136,6 +297,15 @@ impl Mutability {
             "view" => Mutability::View,
             "pure" => Mutability::Pure,
             _ => Mutability::NonPayable,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Mutability::NonPayable => "",
+            Mutability::Payable => "payable",
+            Mutability::View => "view",
+            Mutability::Pure => "pure",
         }
     }
 }
@@ -199,7 +369,7 @@ pub trait TypeBuilder: ExprBuilder {
                                     base = self.lower_type(child);
                                 }
                                 NodeKind::EXPRESSION => {
-                                    size = self.walk_expr(child);
+                                    size = self.lower_expr(child);
                                 }
                                 _ => {}
                             }
@@ -227,7 +397,7 @@ pub trait TypeBuilder: ExprBuilder {
     fn lower_fn_type(&mut self, node: Node) -> TypeId {
         let mut params = Vec::new();
         let mut ret = Vec::new();
-        let mut fn_ty = FnType::default();
+        let mut fn_ty = Fn::<TypeId>::default();
 
         for child in node.named_children(&mut node.walk()) {
             match child.kind_id().into() {
