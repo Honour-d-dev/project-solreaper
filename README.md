@@ -13,4 +13,5 @@ npm run compile
 ```
 
 Then open the project(extension/src/extension.ts) in VS Code and press `F5` to start the extension in debug mode.
-⚠️ BREAKING ⚠️
+### Capabilities
+- Hover 👍
