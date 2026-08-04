@@ -1,27 +1,121 @@
 use std::{fmt, format};
 
 use la_arena::{Arena, Idx};
+use num_bigint::{BigInt, Sign};
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 use tree_sitter::Node;
+
 use crate::ast::kinds::{FieldKind, NodeKind};
-use crate::ir::def_map::DefId;
+use crate::hir::body_map::{Location, VariableKind};
 use crate::hir::exprs::{ExprBuilder, ExprId, Name};
+use crate::ir::def_map::DefId;
+use crate::salsa::HirDatabase;
 
 pub type TypeId = Idx<TypeName>;
 
-// type FnTypeName = Fn<TypeId>;
+#[derive(PartialEq, Eq, Clone, Hash)]
+pub enum LiteralType {
+    Boolean(bool),
+    Integer(BigInt),
+    Rational { numerator: BigInt, denominator: BigInt },
+    String(SmolStr),
+    HexString(SmolStr),
+}
 
-#[derive(PartialEq, Eq)]
+impl LiteralType {
+    fn fits_unsigned(value: &BigInt, bits: u16) -> bool {
+        value.sign() != Sign::Minus
+            && value.to_biguint().is_some_and(|value| value.bits() <= bits as u64)
+    }
+
+    fn fits_signed(value: &BigInt, bits: u16) -> bool {
+        if bits == 0 {
+            return false;
+        }
+        let one = BigInt::from(1u8);
+        let min = -(&one << (bits - 1));
+        let max = (&one << (bits - 1)) - &one;
+        value >= &min && value <= &max
+    }
+
+    fn byte_len(text: &str, hex: bool) -> usize {
+        let text = text.trim();
+        if hex {
+            text.trim_start_matches("hex")
+                .trim_matches(|c| c == '"' || c == '\'')
+                .chars()
+                .filter(|c| c.is_ascii_hexdigit())
+                .count() / 2
+        } else {
+            text.trim_matches(|c| c == '"' || c == '\'').as_bytes().len()
+        }
+    }
+
+    fn integer_converts_to(value: &BigInt, target: &Type) -> Option<u8> {
+        match target {
+            Type::Primitive(Primitive::Uint(bits)) if Self::fits_unsigned(value, *bits) => Some(1),
+            Type::Primitive(Primitive::Int(bits)) if Self::fits_signed(value, *bits) => Some(1),
+            _ => None,
+        }
+    }
+
+    pub fn converts_to(&self, target: &Type) -> Option<u8> {
+        match self {
+            Self::Boolean(_) => matches!(target, Type::Primitive(Primitive::Boolean)).then_some(0),
+            Self::Integer(value) => Self::integer_converts_to(value, target),
+            Self::Rational { numerator, denominator }
+                if !denominator.eq(&BigInt::from(0u8)) && numerator % denominator == BigInt::from(0u8) =>
+            {
+                Self::integer_converts_to(&(numerator / denominator), target)
+            }
+            Self::Rational { .. } => None,
+            Self::String(text) => match target {
+                Type::Primitive(Primitive::String) => Some(0),
+                Type::Primitive(Primitive::Bytes) => Some(1),
+                Type::Primitive(Primitive::FixedBytes(bits))
+                    if Self::byte_len(text, false) <= *bits as usize => Some(1),
+                _ => None,
+            },
+            Self::HexString(text) => match target {
+                Type::Primitive(Primitive::Bytes) => Some(1),
+                Type::Primitive(Primitive::FixedBytes(bits))
+                    if Self::byte_len(text, true) <= *bits as usize => Some(1),
+                _ => None,
+            },
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::Boolean(value) => value.to_string(),
+            Self::Integer(value) => value.to_string(),
+            Self::Rational { numerator, denominator } => format!("{numerator}/{denominator}"),
+            Self::String(value) => value.to_string(),
+            Self::HexString(value) => value.to_string(),
+        }
+    }
+
+    fn default_loc(&self) -> Location {
+        match self {
+            Self::String(_) | Self::HexString(_) => Location::Memory,
+            _ => Location::Stack,
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub enum Type {
     Primitive(Primitive),
-    UserDefined(DefId),
+    Literal(LiteralType),
+    Def(DefId),
     Array{ty: Box<Type>, size: Option<usize>},
     Mapping {
         key: Box<Type>,
         value: Box<Type>
     },
-    Fn(Fn<Type>),//resolves to return type
-    Tuple(Box<[Type]>),
+    Fn(Fn<Type>),//resolves to return type, when called
+    Tuple(Box<[Type]>),// TODO: switch to Cow?
 }
 
 impl Type {
@@ -30,8 +124,9 @@ impl Type {
     /// Cost 0 = identical, higher = more lossy/risky.
     pub fn converts_to(&self, target: &Type) -> Option<u8> {
         match (self, target) {
+            (Type::Literal(literal), target) => literal.converts_to(target),
             (Type::Primitive(a), Type::Primitive(b)) => a.converts_to(b),
-            (Type::UserDefined(a), Type::UserDefined(b)) if a == b => Some(0),
+            (Type::Def(a), Type::Def(b)) if a == b => Some(0),
             (Type::Array { ty: a, size: sa }, Type::Array { ty: b, size: sb }) => {
                 let cost = a.converts_to(b)?;
                 if sa == sb { Some(cost) } else { None }
@@ -65,6 +160,76 @@ impl Type {
                 Some(cost)
             }
             _ => None,
+        }
+    }
+
+    pub fn def_id(&self) -> Option<DefId> {
+        match self {
+            Type::Def(d) => Some(*d),
+            _ => None,
+        }
+    }
+
+    pub fn display(&self, db: &dyn HirDatabase) -> String {
+        match self {
+            Type::Primitive(p) => p.to_string(),
+            Type::Literal(literal) => literal.display(),
+            Type::Def(def) => Self::def_name(db, *def).unwrap_or_else(|| "<unknown>".into()),
+            Type::Array { ty, size: Some(n) } => format!("{}[{n}]", ty.display(db)),
+            Type::Array { ty, size: None } => format!("{}[]", ty.display(db)),
+            Type::Mapping { key, value } => format!("mapping({} => {})", key.display(db), value.display(db)),
+            Type::Fn(_) => "function".into(),
+            Type::Tuple(types) => {
+                let parts: Vec<String> = types.iter().map(|t| t.display(db)).collect();
+                format!("({})", parts.join(", "))
+            }
+        }
+    }
+
+    fn def_name(db: &dyn HirDatabase, def: DefId) -> Option<String> {
+        match def {
+            DefId::Contract(id) => Some(db.contract_data(id).name.to_string()),
+            DefId::Struct(id) => Some(db.struct_data(id).name.to_string()),
+            DefId::Enum(id) => Some(db.enum_data(id).name.to_string()),
+            DefId::Interface(id) => Some(db.interface_data(id).name.to_string()),
+            DefId::Library(id) => Some(db.library_data(id).name.to_string()),
+            DefId::Udvt(id) => Some(db.udvt_data(id).name.to_string()),
+            DefId::Function(id) => Some(db.function_data(id).name.to_string()),
+            DefId::Event(id) => Some(db.event_data(id).name.to_string()),
+            DefId::Error(id) => Some(db.error_data(id).name.to_string()),
+            DefId::Var(id) => Some(db.var_data(id).name.to_string()),
+            DefId::Modifier(id) => Some(db.modifier_data(id).name.to_string()),
+            DefId::File(_) | DefId::Import(_) | DefId::Using(_) => None,
+        }
+    }
+
+    pub fn upcast(self) -> TypeKey {
+        let loc = match self {
+            Type::Primitive(p) => p.default_loc(),
+            Type::Literal(ref literal) => literal.default_loc(),
+            Type::Def(d)  => {
+                match d {
+                    DefId::Struct(_) => Location::Memory,//struct construction always memory
+                    _ => Location::Stack,// contract/interface/library/enum/udvt
+                }
+            },
+            Type::Fn(_) => Location::Stack,
+            _ => Location::Memory,
+        };
+        TypeKey(self, loc)
+    }
+
+    pub fn upcast_with_kind(self, kind: VariableKind) -> TypeKey {
+        match kind {
+            VariableKind::State => {
+                match self.upcast() {
+                    tk @ TypeKey(_, Location::Stack) => tk,
+                    TypeKey(ty,_ ) => TypeKey(ty, Location::Storage) //all dynanic (memory) types live in storage if state
+                }
+            }
+            _ => {
+                self.upcast()
+            }
         }
     }
 }
@@ -147,14 +312,49 @@ impl TypeName {
     }
 }
 
+
+#[derive(PartialEq, Eq, Clone, Hash)]
+pub struct TypeKey(pub Type, pub Location);
+
+impl TypeKey {
+    pub fn typ(&self) -> &Type {
+        &self.0
+    }
+
+    pub fn loc(&self) -> Location {
+        self.1
+    }
+
+    pub fn as_typ(self) -> Type {
+        self.0
+    }
+
+    pub fn def_id(&self) -> Option<DefId> {
+        self.0.def_id()
+    }
+
+    pub fn converts_to(&self, target: &TypeKey) -> Option<u8> {
+        let cost = self.0.converts_to(&target.0)?;
+        match (self.1, target.1) {
+            (a, b) if a == b => Some(cost),
+            (Location::Memory, Location::Calldata) => Some(cost),
+            (Location::Storage, Location::Memory) => Some(cost),
+            (Location::Storage, Location::Calldata) => Some(cost),
+            _ => None,
+        }
+    }
+}
+
+
 #[derive(PartialEq, Eq)]
 pub struct Path {
     pub segments: SmallVec<[Name;2]>
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Primitive {
     Address,
+    AddressPayable,
     Boolean,
     Bytes,
     String,
@@ -168,6 +368,7 @@ impl fmt::Display for Primitive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Primitive::Address => write!(f, "address"),
+            Primitive::AddressPayable => write!(f, "address payable"),
             Primitive::Boolean => write!(f, "bool"),
             Primitive::Bytes => write!(f, "bytes"),
             Primitive::String => write!(f, "string"),
@@ -185,44 +386,53 @@ impl Primitive {
     pub fn converts_to(&self, target: &Primitive) -> Option<u8> {
         match (self, target) {
             (a, b) if a == b => Some(0),
-            // uint widening: uintN -> uintM where M >= N
-            (Primitive::Uint(n), Primitive::Uint(m)) if *m >= *n => Some(1),
-            // int widening: intN -> intM where M >= N
-            (Primitive::Int(n), Primitive::Int(m)) if *m >= *n => Some(1),
-            // int -> uint: only intN -> uintM where M > N (sign bit needs room)
-            (Primitive::Int(n), Primitive::Uint(m)) if *m > *n => Some(2),
-            // fixed bytes widening: bytesN -> bytesM where M >= N
-            (Primitive::FixedBytes(n), Primitive::FixedBytes(m)) if *m >= *n => Some(1),
-            // address <-> bytes20
-            (Primitive::Address, Primitive::FixedBytes(20)) => Some(1),
-            (Primitive::FixedBytes(20), Primitive::Address) => Some(1),
-            // bytes1 -> bytes (dynamic)
-            (Primitive::FixedBytes(n), Primitive::Bytes) if *n <= 32 => Some(1),
-            // string literals -> bytes/string
-            (Primitive::String, Primitive::Bytes) => Some(1),
-            (Primitive::Bytes, Primitive::String) => Some(1),
+            (Primitive::Uint(n), Primitive::Uint(m)) if *m > *n => Some(1),
+            (Primitive::Int(n), Primitive::Int(m)) if *m > *n => Some(1),
+            (Primitive::Uint(n), Primitive::Int(m)) if *m > *n => Some(1),
+            (Primitive::FixedBytes(n), Primitive::FixedBytes(m)) if *m > *n => Some(1),
+            (Primitive::AddressPayable, Primitive::Address) => Some(1),
             _ => None,
+        }
+    }
+
+    /// Returns the default data location for this primitive when no explicit location is declared.
+    /// Value types (uint, int, bool, address, fixed bytes) live on the stack.
+    /// Dynamic types (bytes, string) live in memory.
+    #[inline]
+    pub fn default_loc(&self) -> Location {
+        match self {
+            Primitive::Bytes | Primitive::String => Location::Memory,
+            _ => Location::Stack,
         }
     }
 
     #[inline]
     pub fn parse(ty: &str) -> Primitive {
         match ty {
-            "address" | "address payable" => Primitive::Address,
+            "address" => Primitive::Address,
+            "address payable" => Primitive::AddressPayable,
             "bool" => Primitive::Boolean,
             "bytes" => Primitive::Bytes,
             "string" => Primitive::String,
-            s if s.starts_with("uint") => {
-                let size = s[4..].parse::<u16>().unwrap_or(256);
-                Primitive::Uint(size.min(256))
+            "uint" => Primitive::Uint(256),
+            "int" => Primitive::Int(256),
+            s if s.strip_prefix("uint")
+                .and_then(|size| size.parse::<u16>().ok())
+                .is_some_and(|size| (8..=256).contains(&size) && size % 8 == 0) =>
+            {
+                Primitive::Uint(s[4..].parse().unwrap())
             }
-            s if s.starts_with("int") => {
-                let size = s[3..].parse::<u16>().unwrap_or(256);
-                Primitive::Int(size.min(256))
+            s if s.strip_prefix("int")
+                .and_then(|size| size.parse::<u16>().ok())
+                .is_some_and(|size| (8..=256).contains(&size) && size % 8 == 0) =>
+            {
+                Primitive::Int(s[3..].parse().unwrap())
             }
-            s if s.starts_with("bytes") => {
-                let size = s[5..].parse::<u8>().unwrap_or(32);
-                Primitive::FixedBytes(size.min(32))
+            s if s.strip_prefix("bytes")
+                .and_then(|size| size.parse::<u8>().ok())
+                .is_some_and(|size| (1..=32).contains(&size)) =>
+            {
+                Primitive::FixedBytes(s[5..].parse().unwrap())
             }
             _ => Primitive::Unknown,
         }
@@ -230,7 +440,7 @@ impl Primitive {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 pub struct Fn<T> {
     pub vis: Visibility,
     pub mutability: Mutability,
@@ -249,7 +459,7 @@ impl<T> Default for Fn<T> {
     }
 }
 
-#[derive(Default, PartialEq, Eq, Clone, Copy)]
+#[derive(Default, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Visibility {
     #[default]
     Internal,
@@ -280,7 +490,7 @@ impl Visibility {
 
 }
 
-#[derive(Default, PartialEq, Eq, Clone, Copy)]
+#[derive(Default, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Mutability {
     #[default]
     NonPayable,
@@ -344,15 +554,9 @@ pub trait TypeBuilder: ExprBuilder {
                     }
                     TypeShape::Mapping => {
                         // TODO: add identifier lowering: mainly for state lvl mapping decl though
-                        let mut key = None;
-                        let mut value = None;
-                        if let Some(key_ty) = node.child_by_field_id(FieldKind::KEY_TYPE.into()) {
-                            key = self.lower_type(key_ty);
-                        }
+                        let key = node.child_by_field_id(FieldKind::KEY_TYPE.into()).and_then(|k| self.lower_type(k));
 
-                        if let Some(value_ty) = node.child_by_field_id(FieldKind::VALUE_TYPE.into()) {
-                            value = self.lower_type(value_ty);
-                        }
+                        let value = node.child_by_field_id(FieldKind::VALUE_TYPE.into()).and_then(|v| self.lower_type(v) );
 
                         if let (Some(key), Some(value)) = (key,value) {
                             return Some(self.alloc_type(TypeName::Mapping { key, value }, node));
@@ -444,5 +648,75 @@ pub trait TypeBuilder: ExprBuilder {
         if prefix == "function" { return TypeShape::Function; }
         if prefix == "mapping" { return TypeShape::Mapping; }
         TypeShape::Basic
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn primitive(value: Primitive) -> Type {
+        Type::Primitive(value)
+    }
+
+    #[test]
+    fn primitive_implicit_conversions_match_solidity_directions() {
+        assert_eq!(Primitive::Uint(8).converts_to(&Primitive::Uint(16)), Some(1));
+        assert_eq!(Primitive::Uint(16).converts_to(&Primitive::Uint(8)), None);
+        assert_eq!(Primitive::Int(8).converts_to(&Primitive::Int(16)), Some(1));
+        assert_eq!(Primitive::Uint(8).converts_to(&Primitive::Int(16)), Some(1));
+        assert_eq!(Primitive::Int(8).converts_to(&Primitive::Uint(16)), None);
+        assert_eq!(Primitive::FixedBytes(4).converts_to(&Primitive::FixedBytes(8)), Some(1));
+        assert_eq!(Primitive::AddressPayable.converts_to(&Primitive::Address), Some(1));
+        assert_eq!(Primitive::Address.converts_to(&Primitive::AddressPayable), None);
+        assert_eq!(Primitive::Address.converts_to(&Primitive::FixedBytes(20)), None);
+        assert_eq!(Primitive::FixedBytes(20).converts_to(&Primitive::Address), None);
+        assert_eq!(Primitive::FixedBytes(4).converts_to(&Primitive::Bytes), None);
+        assert_eq!(Primitive::String.converts_to(&Primitive::Bytes), None);
+        assert_eq!(Primitive::Bytes.converts_to(&Primitive::String), None);
+        assert_eq!(Primitive::parse("address payable"), Primitive::AddressPayable);
+        assert_eq!(Primitive::parse("uint"), Primitive::Uint(256));
+        assert_eq!(Primitive::parse("uint7"), Primitive::Unknown);
+        assert_eq!(Primitive::parse("bytes33"), Primitive::Unknown);
+    }
+
+    #[test]
+    fn integer_literals_are_value_sensitive() {
+        let small = Type::Literal(LiteralType::Integer(BigInt::from(255u16)));
+        let large = Type::Literal(LiteralType::Integer(BigInt::from(256u16)));
+        let negative = Type::Literal(LiteralType::Integer(BigInt::from(-1i8)));
+
+        assert!(small.converts_to(&primitive(Primitive::Uint(8))).is_some());
+        assert!(large.converts_to(&primitive(Primitive::Uint(8))).is_none());
+        assert!(negative.converts_to(&primitive(Primitive::Int(8))).is_some());
+        assert!(negative.converts_to(&primitive(Primitive::Uint(8))).is_none());
+    }
+
+    #[test]
+    fn rational_literals_only_convert_when_integral() {
+        let integral = Type::Literal(LiteralType::Rational {
+            numerator: BigInt::from(6u8),
+            denominator: BigInt::from(3u8),
+        });
+        let fractional = Type::Literal(LiteralType::Rational {
+            numerator: BigInt::from(3u8),
+            denominator: BigInt::from(2u8),
+        });
+
+        assert!(integral.converts_to(&primitive(Primitive::Uint(8))).is_some());
+        assert!(fractional.converts_to(&primitive(Primitive::Uint(8))).is_none());
+    }
+
+    #[test]
+    fn string_literals_have_literal_only_byte_conversions() {
+        let literal = Type::Literal(LiteralType::String("abc".into()));
+        let hex_literal = Type::Literal(LiteralType::HexString(r#"hex"abcd"#.into()));
+
+        assert!(literal.converts_to(&primitive(Primitive::String)).is_some());
+        assert!(literal.converts_to(&primitive(Primitive::Bytes)).is_some());
+        assert!(literal.converts_to(&primitive(Primitive::FixedBytes(3))).is_some());
+        assert!(literal.converts_to(&primitive(Primitive::FixedBytes(2))).is_none());
+        assert!(hex_literal.converts_to(&primitive(Primitive::FixedBytes(2))).is_some());
+        assert!(hex_literal.converts_to(&primitive(Primitive::FixedBytes(1))).is_none());
     }
 }

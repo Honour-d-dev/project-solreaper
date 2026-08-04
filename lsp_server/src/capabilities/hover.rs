@@ -1,18 +1,18 @@
 use std::format;
 
-use anyhow::{Context as _, Ok, anyhow};
+use anyhow::{Context as _, Ok};
 use la_arena::Arena;
 use lsp_server::{Request, Response};
 use lsp_types::{HoverContents, MarkupContent, MarkupKind, HoverParams};
 
-use crate::ast::{ContractId, EnumId, ErrorId, EventId, FunctionId, ImportId, InterfaceId, LibraryId, ModifierId, NodeRange, StructId, VarId};
-use crate::hir::body_map::{BodyOwnerId, BodySourceMap, ByteOffset, Local, SemanticId, VariableKind};
+use crate::ast::{ContractId, EnumId, ErrorId, EventId, FunctionId, ImportId, InterfaceId, LibraryId, ModifierId, NodeRange, StructId, UsingId, VarId};
+use crate::hir::body_map::{BodyOwnerId, BodySourceMap, Local, SemanticId, VariableKind};
 use crate::hir::exprs::{Expr, ExprId, Literal, Name};
-use crate::hir::item_data::{ExprStore, Field, Variant};
+use crate::hir::item_data::{EnumData, ExprStore, Field, VariantId};
 use crate::hir::resolver::{Context, Resolution, Resolver};
 use crate::hir::types::{Mutability, Type, TypeName, Visibility};
 use crate::ir::def_map::DefId;
-use crate::salsa::{HirDatabase, SalsaDb};
+use crate::salsa::{File, HirDatabase, SalsaDb};
 use crate::utilities::{log_info, to_utf8path};
 
 
@@ -20,33 +20,32 @@ use crate::utilities::{log_info, to_utf8path};
 struct SemanticCtx<'a> {
     locals: Option<&'a Arena<Local>>,
     fields: Option<&'a Arena<Field>>,
-    variants: Option<&'a Arena<Variant>>,
+    enum_data: Option<&'a EnumData>,
 }
 
 impl<'a> SemanticCtx<'a> {
     pub fn empty() -> Self {
-        SemanticCtx { locals: None, fields: None, variants: None }
+        SemanticCtx { locals: None, fields: None, enum_data: None }
     }
 
     pub fn local(locals: &'a Arena<Local>) -> Self {
-        SemanticCtx { locals: Some(locals), fields: None, variants: None }
+        SemanticCtx { locals: Some(locals), fields: None, enum_data: None }
     }
 
     pub fn field(fields: &'a Arena<Field>) -> Self {
-        SemanticCtx { locals: None, fields: Some(fields), variants: None }
+        SemanticCtx { locals: None, fields: Some(fields), enum_data: None }
     }
 
-    pub fn variant(variants: &'a Arena<Variant>) -> Self {
-        SemanticCtx { locals: None, fields: None, variants: Some(variants) }
+    pub fn variant(enum_data: &'a EnumData) -> Self {
+        SemanticCtx { locals: None, fields: None, enum_data: Some(enum_data) }
     }
 }
 
 
 
 struct Hover<'db> {
-    db: &'db SalsaDb, 
+    db: &'db SalsaDb,
     resolver: Resolver<'db>,
-    offset: ByteOffset
 }
 
 impl<'db> Hover<'db> {
@@ -62,20 +61,15 @@ impl<'db> Hover<'db> {
         match store.range_to_semantic.get(&range)? {
             SemanticId::Local(local_id) => {
                 let locals = ctx.locals?;
-                let local = &locals[*local_id];
-                let ty = store.types[*local.type_name()].to_string(&store.types);
-                Some(Self::code_block(&format!("{ty} {} ({} {})", local.name(), local.location(), local.kind())))
+                Some(self.format_local(&locals[*local_id], store))
             }
             SemanticId::Field(field_id) => {
                 let fields = ctx.fields?;
-                let field = &fields[*field_id];
-                let ty = store.types[field.type_name].to_string(&store.types);
-                Some(Self::code_block(&format!("{} {}", ty, field.name)))
+                Some(self.format_field(&fields[*field_id], store, self.resolver.file))
             }
             SemanticId::Variant(variant_id) => {
-                let variants = ctx.variants?;
-                let variant = &variants[*variant_id];
-                Some(Self::code_block(&format!("enum variant {}", variant.name)))//just return the variant name . the enum data will add the enum name and format in codeblock
+                let enum_data = ctx.enum_data?;
+                Some(self.format_variant(enum_data, *variant_id, self.resolver.file))
             }
             SemanticId::Expr(expr_id) => {
                 Some(self.hover_expr(*expr_id, store, sourcemap))
@@ -92,7 +86,12 @@ impl<'db> Hover<'db> {
     fn hover_def(&self, def_id: &DefId, range: Option<NodeRange>) -> anyhow::Result<String> {
         match def_id {
             DefId::File(_) => Ok("file".into()),
-            DefId::Import(id) => self.hover_import(id, range),
+            DefId::Udvt(id) => {
+                let data = self.db.udvt_data(*id);
+                Ok(Self::code_block(&format!("type {} is {}", data.name, data.underlying)))
+            }
+            DefId::Using(id) => self.hover_using(id, range.context("using hover has no range")?),
+            DefId::Import(id) => self.hover_import(id, range.context("import hover has no range")?),
             DefId::Contract(id) => self.hover_contract(id, range),
             DefId::Library(id) => self.hover_library(id, range),
             DefId::Interface(id) => self.hover_interface(id, range),
@@ -123,23 +122,22 @@ impl<'db> Hover<'db> {
 
     fn hover_function(&self, fn_id: &FunctionId, range: Option<NodeRange>) -> anyhow::Result<String> {
         let fn_data = self.db.function_data(*fn_id);
+        // FIXME: fn names are lowered as ident. which means if fn name is overloaded the resolver won't be able to figure out the exact fn
         let (body_map, sourcemap) = self.db.body_and_source_map(BodyOwnerId::Function(*fn_id));
         match range {
             Some(range) => {
                 self.hover_semantic(range, &body_map.expr_store, Some(&sourcemap), SemanticCtx::local(&body_map.locals)).context("No semantic Id at position")
             }
             None => {
-                let params = fn_data.arg_params.iter()
-                    .map(|id| {
-                        let local = &fn_data.parameters[*id];
+                let params = fn_data.parameters.iter()
+                    .map(|(_, local)| {
                         let ty = fn_data.expr_store.types[*local.type_name()].to_string(&fn_data.expr_store.types);
                         format!("{} {}", ty, local.name())
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                let ret = fn_data.ret_params.iter()
-                    .map(|id| {
-                        let local = &fn_data.parameters[*id];
+                let ret = fn_data.return_parameters.iter()
+                    .map(|(_, local)| {
                         fn_data.expr_store.types[*local.type_name()].to_string(&fn_data.expr_store.types)
                     })
                     .collect::<Vec<_>>()
@@ -211,7 +209,7 @@ impl<'db> Hover<'db> {
         let enum_data = self.db.enum_data(*enum_id);
         match range {
             Some(range) => {
-                self.hover_semantic(range, &enum_data.expr_store, None, SemanticCtx::variant(&enum_data.variants)).context("No semantic Id at position")
+                self.hover_semantic(range, &enum_data.expr_store, None, SemanticCtx::variant(&enum_data)).context("No semantic Id at position")
             }
             None => {
                 let variants = enum_data.variants.iter()
@@ -325,16 +323,14 @@ impl<'db> Hover<'db> {
         }
     }
 
-    fn hover_import(&self, import_id: &ImportId, range: Option<NodeRange>) -> anyhow::Result<String> {
+    fn hover_import(&self, import_id: &ImportId, range: NodeRange) -> anyhow::Result<String> {
         let import_data = self.db.import_data(*import_id);
-        match range {
-            Some(range) => {
-                self.hover_semantic(range, &import_data.expr_store, None, SemanticCtx::empty()).context("No semantic Id at position")
-            }
-            None => {
-                Err(anyhow!("no symbol"))
-            }
-        }
+        self.hover_semantic(range, &import_data.expr_store, None, SemanticCtx::empty()).context("No semantic Id at position")
+    }
+
+    fn hover_using(&self, using_id: &UsingId, range: NodeRange) -> anyhow::Result<String> {
+        let using_data = self.db.using_data(*using_id);
+        self.hover_semantic(range, &using_data.expr_store, None, SemanticCtx::empty()).context("No semantic Id at position")
     }
 
     fn hover_type(&self, ty: &TypeName, types: &Arena<TypeName>, segment: u8) -> String {
@@ -344,17 +340,14 @@ impl<'db> Hover<'db> {
                 let len = path.segments.len();
                 let seg = (segment as usize).min(len.saturating_sub(1));
                 let segments = &path.segments[..=seg];
-                let name = segments.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(".");
-                if let Some(resolution) = self.resolver.resolve_path(segments) {
-                    match resolution {
-                        Resolution::Type(def_id) | Resolution::Def(def_id) => {
-                            self.hover_def(&def_id, None).unwrap_or_else(|_| Self::code_block(&name))
-                        }
-                        Resolution::Primitive(p) => Self::code_block(&p.to_string()),
-                        _ => Self::code_block(&name),
+                match self.resolver.resolve_path(segments) {
+                    Some(res) => {
+                        self.hover_resolution(&res)
                     }
-                } else {
-                    Self::code_block(&name)
+                    None => {
+                        let name = segments.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(".");
+                        Self::code_block(&name)
+                    }
                 }
             }
             _ => Self::code_block(&ty.to_string(types)),
@@ -368,18 +361,14 @@ impl<'db> Hover<'db> {
         sourcemap: Option<&BodySourceMap>,
     ) -> String {
         match &store.exprs[expr_id] {
-            Expr::Ident(name) => {
-                let scope = sourcemap.and_then(|sm| sm.expr_scopes.get(expr_id).copied());
-                match self.resolver.resolve_name(name, scope, self.offset) {
-                    Some(res) => self.hover_resolution(&res),
-                    None => format!("### unresolved: {name}"),
-                }
-            }
             Expr::Path(p) => {
-                let Some(f) = self.db.resolve_path(self.resolver.file, p) else {return "".into();};
+                let Some(f) = self.db.resolve_path(self.resolver.file, p) else {
+                    return format!("#### failed to resolve path: {p}");
+                };
                 let path = f.path(self.db);
                 let file_name = path.file_name().unwrap_or_default();
-                format!("### File: {file_name} \n---\n [{path}](file://{path})")            }
+                format!("### File: {file_name} \n---\n [{path}](file://{path})")            
+            }
             Expr::Literal(lit) => {
                 match lit {
                     Literal::Boolean(b) => Self::code_block(&format!("bool {b}")),
@@ -396,81 +385,82 @@ impl<'db> Hover<'db> {
                     Self::code_block(&format!("{l} {} {r}", op.as_str()))
                 )
             }
-            Expr::Member { obj, prop } => {
-                let obj_ty = self.resolver.infer_expr(*obj, store, sourcemap);
-                match obj_ty {
-                    Some(Type::UserDefined(def)) => {
-                        match self.resolver.lookup_name(&def, prop) {
-                            Some(res) => self.hover_resolution(&res),
-                            None => {
-                                let obj_str = self.format_expr(*obj, &store.exprs, &store.types);
-                                Self::code_block(&format!("{obj_str}.{prop}"))
-                            }
-                        }
-                    }
-                    _ => {//@TODO add member support for fn/builtin types like array,mapping,primitives
-                        let obj_str = self.format_expr(*obj, &store.exprs, &store.types);
-                        Self::code_block(&format!("{obj_str}.{prop}"))
-                    }
-                }
-            }
-            Expr::Call { callee, args } => {
-                let res = self.resolver.resolve_callee(*callee, store, sourcemap);
-                match res {
-                    Some(Resolution::Def(def)) => {
-                        self.hover_def(&def, None).unwrap_or_else(|_| "### Unknown def".into())
-                    }
-                    Some(Resolution::Defs(candidates)) => {
-                        let arg_types: Vec<Type> = args.iter()
-                            .filter_map(|a| self.resolver.infer_expr(*a, store, sourcemap))
-                            .collect();
-                        if arg_types.len() == args.len() {
-                            if let Some(def) = self.resolver.resolve_overload(&candidates[..], &arg_types) {
-                                self.hover_def(&def, None).unwrap_or_else(|_| "### Unknown def".into())
-                            } else {
-                                self.hover_def_candidates(&candidates)
-                            }
-                        } else {
-                            self.hover_def_candidates(&candidates)
-                        }
-                    }
-                    _ => {
-                        Self::code_block(&self.format_expr(*callee, &store.exprs, &store.types))
-                    }
-                }
-            }
-            Expr::Array { base, index: _ } => {
-                Self::code_block(&self.format_expr(*base, &store.exprs, &store.types))
+            _ => match self.resolver.resolve_expr(expr_id, store, sourcemap) {
+                Some(res) => self.hover_resolution(&res),
+                None => Self::code_block(&self.format_expr(expr_id, &store.exprs, &store.types)),
             }
         }
+    }
+
+    fn format_local(&self, local: &Local, store: &ExprStore) -> String {
+        let ty = store.types[*local.type_name()].to_string(&store.types);
+        Self::code_block(&format!("{ty} {} ({} {})", local.name(), local.location(), local.kind()))
+    }
+
+    fn format_field(&self, field: &Field, store: &ExprStore, file: File) -> String {
+        let ty = store.types[field.type_name].to_string(&store.types);
+        let doc = self.db.decl_docs(file, field.range);
+        Self::format_with_doc(&format!("{ty} {}", field.name), doc)
+    }
+
+    fn format_variant(&self, enum_data: &EnumData, variant_id: VariantId, file: File) -> String {
+        let variant = &enum_data.variants[variant_id];
+        let doc = self.db.decl_docs(file, variant.range);
+        Self::format_with_doc(&format!("enum variant {}.{}", enum_data.name, variant.name), doc)
     }
 
     fn hover_resolution(&self, res: &Resolution) -> String {
         match res {
             Resolution::Local(local_id) => {
                 if let Some(body) = self.resolver.body() {
-                    let local = &body.locals[*local_id];
-                    let ty = body.expr_store.types[*local.type_name()].to_string(&body.expr_store.types);
-                    Self::code_block(&format!("{ty} {} ({} {})", local.name(), local.location(), local.kind()))
+                    self.format_local(&body.locals[*local_id], &body.expr_store)
                 } else {
                     Self::code_block("local variable")//no need
                 }
             }
             Resolution::Def(def_id) => self.hover_def(def_id, None).unwrap_or_else(|_| "### Unknown def".into()),
-            Resolution::Primitive(p) => Self::code_block(&p.to_string()),
-            Resolution::Type(def_id) => self.hover_def(def_id, None).unwrap_or_else(|_| "### Unknown def".into()),
+            Resolution::TypeKey(tk) => {
+                if let Some(def_id) = tk.def_id() {
+                    self.hover_def(&def_id, None).unwrap_or_else(|_| Self::code_block(&tk.typ().display(self.db)))
+                } else {
+                    Self::code_block(&tk.typ().display(self.db))
+                }
+            }
+            Resolution::Type(ty) => {
+                if let Some(def_id) = ty.def_id() {
+                    self.hover_def(&def_id, None).unwrap_or_else(|_| Self::code_block(&ty.display(self.db)))
+                } else {
+                    Self::code_block(&ty.display(self.db))
+                }
+            }
             Resolution::Defs(defs) => self.hover_def_candidates(defs),
             Resolution::Variant(enum_id, variant_id) => {
                 let enum_data = self.db.enum_data(*enum_id);
-                let variant = &enum_data.variants[*variant_id];
-                Self::code_block(&format!("enum variant {}.{}", enum_data.name, variant.name))
+                let (file, _) = DefId::Enum(*enum_id).file_id();
+                self.format_variant(&enum_data, *variant_id, file)
             }
-            Resolution::Field(struct_id, field_id) => {
+            Resolution::Field(tk, field_id) => {
+                let Type::Def(DefId::Struct(struct_id)) = tk.typ() else { return "### Unknown field".into(); };
                 let struct_data = self.db.struct_data(*struct_id);
-                let field = &struct_data.fields[*field_id];
-                let ty = struct_data.expr_store.types[field.type_name].to_string(&struct_data.expr_store.types);
-                Self::code_block(&format!("{ty} {}", field.name))
+                let (file, _) = DefId::Struct(*struct_id).file_id();
+                self.format_field(&struct_data.fields[*field_id], &struct_data.expr_store, file)
             }
+            Resolution::Builtin(id) => {
+                Self::format_with_doc(&format!("builtin {}", id.name()), Some(id.doc().into()))
+            }
+            Resolution::BuiltinField(f) => {
+                Self::format_with_doc(&format!("{} {}", f.ty, f.name), Some(f.doc.clone().into()))
+            }
+            Resolution::BuiltinFn(f) => {
+                let params = f.params.iter().map(|t| t.display(self.db)).collect::<Vec<_>>().join(", ");
+                let ret = match &f.return_type {
+                    Some(ty) => format!(" -> {}", ty.display(self.db)),
+                    None => String::new(),
+                };
+                format!("{}\n---\n{}", Self::code_block(&format!("function {}({}){}", f.name, params, ret)), f.doc)
+            }
+            Resolution::MetaType(_) => "#### meta type cast".into(),
+            Resolution::Super(def) => format!("Inheriance lookup on: \n --- \n {}", self.hover_def(def, None).unwrap_or("a contract".into())),
         }
     }
 
@@ -508,8 +498,11 @@ impl<'db> Hover<'db> {
             Expr::Call { callee, args: _ } => {
                 self.format_expr(*callee, exprs, types)
             }
-            Expr::Array { base, index: _ } => {
+            Expr::ArrayAccess { base, index: _ } => {
                 self.format_expr(*base, exprs, types)
+            }
+            Expr::MetaType(ty) => {
+                format!("type({})", self.format_expr(*ty, exprs, types))
             }
         }
     }
@@ -565,7 +558,7 @@ pub fn hover(db: &SalsaDb, request: Request) -> anyhow::Result<Response> {
     let resolver = Resolver::build(db, &ctx);
 
     let range = NodeRange::from(&node.node());
-    let h = Hover { db, resolver, offset };
+    let h = Hover { db, resolver };
     let hover_str = h.hover_def(&ctx.container, Some(range))?;
     
 
