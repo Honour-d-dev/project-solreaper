@@ -49,7 +49,7 @@ impl std::fmt::Display for VariableKind {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Location {
     #[default]
     Stack,//for builtins/primitive

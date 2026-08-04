@@ -1,9 +1,12 @@
 use la_arena::Idx;
-use tree_sitter::Node;
+use num_bigint::BigInt;
 use smol_str::SmolStr;
+use tree_sitter::Node;
 
 use crate::ast::kinds::{FieldKind, NodeKind};
 use crate::ast::{AstNode, NodeRange};
+use crate::hir::body_map::Location;
+use crate::hir::types::{LiteralType, Type, TypeKey};
 
 pub type Name = SmolStr;
 pub type ExprId = Idx<Expr>;//This forces builder to use Arenas for exprs, Ideally the builder should be able to store & id exprs however they want
@@ -85,7 +88,7 @@ impl BinaryOp {
 #[derive(Clone, PartialEq, Eq)]
 pub enum Expr {
     Ident(Name),
-    Path(Box<str>),
+    Path(Box<str>),//put path in literal??
     Literal(Literal),
     Binary {
         op: BinaryOp,
@@ -101,18 +104,80 @@ pub enum Expr {
         args: Box<[ExprId]>
     },
     /// NOTE: this also covers mapping access exprs ie. balance[msg.sender]
-    Array {
+    ArrayAccess {
         base: ExprId,
         index: Option<ExprId>,
-    }
+    },
+    MetaType(ExprId)
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Literal {
     Boolean(bool),
     String(SmolStr),
-    Number(SmolStr),
+    Number(SmolStr),//store numbers as u256
     HexString(SmolStr),
+}
+
+impl Literal {
+    fn parse_number(text: &str) -> LiteralType {
+        let text = text.trim().replace('_', "");
+        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            if let Some(value) = BigInt::parse_bytes(hex.as_bytes(), 16) {
+                return LiteralType::Integer(value);
+            }
+        }
+
+        let (mantissa, exponent) = text
+            .split_once(['e', 'E'])
+            .map(|(mantissa, exponent)| (mantissa, exponent.parse::<i32>().unwrap_or(0)))
+            .unwrap_or((&text, 0));
+        let (negative, mantissa) = mantissa.strip_prefix('-')
+            .map(|value| (true, value))
+            .or_else(|| mantissa.strip_prefix('+').map(|value| (false, value)))
+            .unwrap_or((false, mantissa));
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let digits = format!("{whole}{fraction}");
+        let mut numerator = BigInt::parse_bytes(digits.as_bytes(), 10).unwrap_or_default();
+        if negative {
+            numerator = -numerator;
+        }
+
+        let scale = fraction.len() as i32 - exponent;
+        if scale <= 0 {
+            for _ in 0..(-scale) {
+                numerator *= 10;
+            }
+            LiteralType::Integer(numerator)
+        } else {
+            let mut denominator = BigInt::from(1u8);
+            for _ in 0..scale {
+                denominator *= 10;
+            }
+            LiteralType::Rational { numerator, denominator }
+        }
+    }
+
+    fn literal_type(&self) -> LiteralType {
+        match self {
+            Literal::Boolean(value) => LiteralType::Boolean(*value),
+            Literal::Number(value) => Self::parse_number(value),
+            Literal::String(value) => LiteralType::String(value.clone()),
+            Literal::HexString(value) => LiteralType::HexString(value.clone()),
+        }
+    }
+
+    pub fn loc(&self) -> Location {
+        match self {
+            Literal::String(_) | Literal::HexString(_) => Location::Memory,
+            _ => Location::Stack,
+        }
+    }
+
+    pub fn type_key(&self) -> TypeKey {
+        let literal = self.literal_type();
+        TypeKey(Type::Literal(literal), self.loc())
+    }
 }
 
 pub trait  ExprBuilder {
@@ -140,10 +205,20 @@ pub trait  ExprBuilder {
                 let text = self.root().text_by_range(node.byte_range());
                 Some(self.alloc_expr(Expr::Literal(Literal::String(text.into())), node))
             },
-            NodeKind::IDENTIFIER => {
+            //types(primitive/user defined) contained in expressions are lowered as identifiers. 
+            //This is mainly to support type casts & udvt's e.g address(this)
+            NodeKind::IDENTIFIER | NodeKind::PRIMITIVE_TYPE => {
                 let ident = self.root().text_by_range(node.byte_range());
                 Some(self.alloc_expr(Expr::Ident(ident.into()), node))
 
+            }
+            NodeKind::META_TYPE_EXPRESSION => {
+                let type_node = node.child(0)?;//type is an unnamed node
+                let ty = self.lower_expr(node.named_child(0)?)?;
+
+                let expr = Expr::MetaType(ty);
+                // still alloc as call because of shape
+                Some(self.alloc_call_expr(expr, type_node, node))
             }
             NodeKind::MEMBER_EXPRESSION => {
                 let obj = node.child_by_field_id(FieldKind::OBJECT.into()).and_then(|obj| self.lower_expr(obj))?;
@@ -152,7 +227,6 @@ pub trait  ExprBuilder {
 
                 Some(self.alloc_member_expr(Expr::Member { obj, prop: name.into() }, range, node))
                 
-                //Is the prev exprId before the prop always the obj? is it an invariant??
             }
             NodeKind::CALL_EXPRESSION => {
                 let callee_node = node.child_by_field_id(FieldKind::FUNCTION.into())?;
@@ -186,14 +260,14 @@ pub trait  ExprBuilder {
                 
                 let index = node.child_by_field_id(FieldKind::INDEX.into()).and_then(|index| self.lower_expr(index));
                 
-                let array_expr = Expr::Array {
+                let array_expr = Expr::ArrayAccess {
                     base,
                     index,
                 };
                 Some(self.alloc_expr(array_expr, node))
             }
             NodeKind::EMIT_STATEMENT => {
-                //Emit statements are structured like expressions 🤷‍♂️
+                //Emit statements are structured like expressions but not wrapped in an expression 🤷‍♂️
                 let callee_node = node.child_by_field_id(FieldKind::NAME.into())?;
                 let callee = self.lower_expr(callee_node)?;
 
@@ -232,7 +306,7 @@ pub trait  ExprBuilder {
                 };
                 Some(self.alloc_call_expr(call_expr, callee_node, node))
             }
-            NodeKind::MODIFIER_INVOCATION =>  {
+            NodeKind::MODIFIER_INVOCATION | NodeKind::TYPECAST_EXPRESSION =>  {
                 let name_node = node.named_child(0)?;
                 let callee = self.lower_expr(name_node)?;
 
