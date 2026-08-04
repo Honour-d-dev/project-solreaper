@@ -2,6 +2,7 @@ use smallvec::SmallVec;
 use smol_str::SmolStr;
 use crate::ast::ast::{AstNode, ToAstNode};
 use crate::ast::kinds::{FieldKind, NodeKind};
+use crate::hir::exprs::Name;
 use crate::hir::types::Path;
 
 pub trait HasName: ToAstNode {
@@ -45,6 +46,11 @@ pub trait HasMembers: ToAstNode {
         };
         for node in body.children(&mut self.raw().node().walk()) {
             match NodeKind::from(node.kind_id()) {
+                NodeKind::USING_DIRECTIVE => {
+                    if let Some(using) = Using::cast(self.raw().upcast(node)) {
+                        members.push(Item::Using(using));
+                    }
+                }
                 NodeKind::FUNCTION_DEFINITION => {
                     if let Some(func) = Function::cast(self.raw().upcast(node)) {
                         members.push(Item::Function(func));
@@ -121,6 +127,7 @@ macro_rules! impl_to_ast_node {
 impl_to_ast_node!(
     SourceFile, SOURCE_FILE
     Import, IMPORT_DIRECTIVE
+    Using, USING_DIRECTIVE
     Contract, CONTRACT_DEFINITION, HasName, HasBases, HasMembers
     Interface, INTERFACE_DEFINITION, HasName, HasBases, HasMembers
     Library, LIBRARY_DEFINITION, HasName, HasMembers
@@ -131,6 +138,7 @@ impl_to_ast_node!(
     Event, EVENT_DEFINITION, HasName
     Error, ERROR_DEFINITION, HasName
     Var, STATE_VAR_DECLARATION | CONST_VAR_DECLARATION, HasName
+    Udvt, USER_DEFINED_TYPE_DEFINITION, HasName
 );
 
 
@@ -200,19 +208,51 @@ pub struct Modifier {
 }
 
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Udvt {
+    raw: AstNode,
+}
+
+impl Udvt {
+    pub fn underlying(&self) -> Option<Name> {
+        let underlying_node = self.raw.node().named_children(&mut self.raw.node().walk()).find(|n| n.kind_id() == NodeKind::PRIMITIVE_TYPE)?;
+        Some(self.raw.text_by_range(underlying_node.byte_range()).into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Using {
+    raw: AstNode,
+}
+
+impl Using {
+    pub fn sources(&self) -> Box<[Name]> {
+        let mut sources = vec![];
+        for source in self.raw.node().children(&mut self.raw.node().walk()) {
+            if source.kind_id() == NodeKind::TYPE_ALIAS || source.kind_id() == NodeKind::USING_ALIAS {
+                sources.push(self.raw.text_by_range(source.byte_range()).into());
+            }
+        }
+        sources.into_boxed_slice()
+    }
+
+    pub fn target(&self) -> Option<Name> {
+        let target_node = self.raw.node().named_children(&mut self.raw.node().walk()).find(|n| n.kind_id() == NodeKind::TYPE_NAME)?;
+        Some(self.raw.text_by_range(target_node.byte_range()).into())
+    }
+
+    pub fn is_global(&self) -> bool {
+        self.raw.node().children(&mut self.raw.node().walk()).any(|n| n.kind_id() == NodeKind::GLOBAL)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Import {
     raw: AstNode,
 }
 
-
-
-
-
-
 #[derive(Debug,Default, Clone, PartialEq, Eq)]
-pub(crate) enum ImportType {
+pub enum ImportType {
     #[default]
     Full,//can i use full for namespace? namespace is just full with an alias
     Named {
@@ -224,7 +264,7 @@ pub(crate) enum ImportType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ImportItem {
+pub struct ImportItem {
     pub name: SmolStr,
     pub alias: Option<SmolStr>,
 }
@@ -257,7 +297,7 @@ impl Import {
         }
 
         match (name, alias) {
-            (name, alias) if !name.is_empty()  => ImportType::Named { symbols },
+            (name, _) if !name.is_empty()  => ImportType::Named { symbols },
             (name, alias) if name.is_empty() && alias.is_empty() => ImportType::Full,
             (name, alias) if name.is_empty() && !alias.is_empty() => ImportType::Namespace { alias },
             _ => ImportType::Full,//never reached, match is logically exhaustive
@@ -277,6 +317,8 @@ impl Import {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     SourceFile(SourceFile),
+    Using(Using),
+    Udvt(Udvt),
     Contract(Contract),
     Interface(Interface),
     Library(Library),
@@ -294,6 +336,8 @@ impl ToAstNode for Item {
     fn to_node(self) -> AstNode {
         match self {
             Item::SourceFile(s) => s.to_node(),
+            Item::Using(u) => u.to_node(),
+            Item::Udvt(u) => u.to_node(),
             Item::Contract(c) => c.to_node(),
             Item::Interface(i) => i.to_node(),
             Item::Library(l) => l.to_node(),
@@ -311,6 +355,8 @@ impl ToAstNode for Item {
     fn raw(&self) -> &AstNode {
         match self {
             Item::SourceFile(s) => s.raw(),
+            Item::Using(u) => u.raw(),
+            Item::Udvt(u) => u.raw(),
             Item::Contract(c) => c.raw(),
             Item::Interface(i) => i.raw(),
             Item::Library(l) => l.raw(),
@@ -328,6 +374,8 @@ impl ToAstNode for Item {
     fn cast(node: AstNode) -> Option<Self> {
         match NodeKind::from(node.node().kind_id()) {
             NodeKind::SOURCE_FILE => Some(Self::SourceFile(SourceFile::cast(node).unwrap())),
+            NodeKind::USING_DIRECTIVE => Some(Self::Using(Using::cast(node).unwrap())),
+            NodeKind::USER_DEFINED_TYPE_DEFINITION => Some(Self::Udvt(Udvt::cast(node).unwrap())),
             NodeKind::CONTRACT_DEFINITION => Some(Self::Contract(Contract::cast(node).unwrap())),
             NodeKind::INTERFACE_DEFINITION => Some(Self::Interface(Interface::cast(node).unwrap())),
             NodeKind::LIBRARY_DEFINITION => Some(Self::Library(Library::cast(node).unwrap())),
@@ -347,6 +395,8 @@ impl ToAstNode for Item {
         matches!(
             n,
                 NodeKind::SOURCE_FILE
+                | NodeKind::USING_DIRECTIVE
+                | NodeKind::USER_DEFINED_TYPE_DEFINITION
                 | NodeKind::CONTRACT_DEFINITION
                 | NodeKind::INTERFACE_DEFINITION
                 | NodeKind::LIBRARY_DEFINITION

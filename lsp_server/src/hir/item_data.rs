@@ -6,10 +6,10 @@ use rustc_hash::FxHashMap;
 use tree_sitter::Node;
 
 use crate::ast::kinds::{FieldKind, NodeKind};
-use crate::ast::{AstNode, Contract, Enum, Error, Event, Function, HasBases, HasName, Import, ImportType, Interface, Library, Modifier, NodeRange, Struct, ToAstNode, Var};
+use crate::ast::{AstNode, Contract, Enum, Error, Event, Function, HasName, Import, ImportType, Interface, Library, Modifier, NodeRange, Struct, ToAstNode, Udvt, Using, Var};
 use crate::hir::body_map::{ByteOffset, Local, LocalId, Location, SemanticId, VariableKind};
 use crate::hir::exprs::{Expr, ExprBuilder, ExprId, Name};
-use crate::hir::types::{Mutability, TypeBuilder, TypeId, TypeName, Visibility};
+use crate::hir::types::{Mutability, Primitive, TypeBuilder, TypeId, TypeName, Visibility};
 
 #[derive(PartialEq, Eq)]
 pub struct ExprStore {
@@ -39,6 +39,7 @@ pub struct VarData {
     pub type_name: TypeId,
     pub vis: Visibility,
     pub kind: VariableKind,
+    pub loc: Location,
     /// Initializer expression for constant/immutable variables
     pub init: Option<ExprId>,
     /// Var type can be a complex type e.g mapping(x.y => y.z)
@@ -50,6 +51,7 @@ pub struct VarData {
 pub struct Field {
     pub name: Name,
     pub type_name: TypeId,
+    pub range: NodeRange,
 }
 
 pub type FieldId = Idx<Field>;
@@ -64,6 +66,7 @@ pub struct StructData {
 #[derive(PartialEq, Eq, Hash)]
 pub struct Variant {
     pub name: Name,
+    pub range: NodeRange,
 }
 
 pub type VariantId = Idx<Variant>;
@@ -82,9 +85,8 @@ pub struct FunctionData {
     pub vis: Visibility,
     pub mutability: Mutability,
     //TODO - Modifier invocations
-    pub arg_params: Box<[LocalId]>,
-    pub ret_params: Box<[LocalId]>,
     pub parameters: Arena<Local>,//parameters and returns
+    pub return_parameters: Arena<Local>,
     pub expr_store: ExprStore,
 }
 
@@ -130,6 +132,22 @@ pub struct LibraryData {
 }
 
 
+#[derive(PartialEq, Eq)]
+pub struct UdvtData {
+    pub name: Name,
+    pub underlying: Primitive,
+    pub expr_store: ExprStore,
+}
+
+#[derive(PartialEq, Eq)]
+pub struct UsingData {
+    pub target: Option<TypeId>,
+    pub sources: Box<[ExprId]>,
+    pub global: bool,
+    pub expr_store: ExprStore,
+}
+
+
 pub struct ItemBuilder {
     root: AstNode,
     expr_store: ExprStore
@@ -146,9 +164,9 @@ impl ExprBuilder for ItemBuilder {
         expr_id
     }
 
-    fn alloc_member_expr(&mut self, member: Expr, range: NodeRange, node: Node) -> ExprId {
+    fn alloc_member_expr(&mut self, member: Expr, prop_range: NodeRange, node: Node) -> ExprId {
         let mem_id = self.alloc_expr(member, node);
-        self.expr_store.range_to_semantic.insert(range, SemanticId::Expr(mem_id));
+        self.expr_store.range_to_semantic.insert(prop_range, SemanticId::Expr(mem_id));
         mem_id
     }
 
@@ -192,9 +210,9 @@ impl ItemBuilder {
         }
     }
 
+       ////////////////////////////////////////////////////////////////////////////////////////////////////////
+     ///                                  MARK: IMPORT BUILDER                                             ///
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                        IMPORT BUILDER                                             ///
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////
     
     pub fn build_import(&mut self, import: &Import) -> ImportData {
         let import_type = import.import_type();
@@ -238,7 +256,7 @@ impl ItemBuilder {
 
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      VARIABLE BUILDER                                             ///
+    ///                                MARK: VARIABLE BUILDER                                             ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
     
     pub fn build_var(&mut self, var: &Var) -> VarData {
@@ -267,13 +285,14 @@ impl ItemBuilder {
             type_name: type_name.unwrap(),
             vis,
             kind,
+            loc: if kind == VariableKind::State {Location::Storage} else {Location::Stack},
             init,
             expr_store: std::mem::take(&mut self.expr_store),
         }
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      STRUCT BUILDER                                               ///
+    ///                                MARK: STRUCT BUILDER                                               ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
     
     pub fn build_struct(&mut self, strukt: &Struct) -> StructData {
@@ -301,6 +320,7 @@ impl ItemBuilder {
                         let field_id = fields.alloc(Field {
                             name,
                             type_name,
+                            range: NodeRange::from(&member),
                         });
 
                         self.expr_store.range_to_semantic.insert(NodeRange::from(&member), SemanticId::Field(field_id));
@@ -319,7 +339,7 @@ impl ItemBuilder {
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      ENUM BUILDER                                                 ///
+    ///                                MARK: ENUM BUILDER                                                 ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
     
     pub fn build_enum(&mut self, enum_: &Enum) -> EnumData {
@@ -336,6 +356,7 @@ impl ItemBuilder {
 
                     let variant_id = variants.alloc(Variant {
                         name,
+                        range: NodeRange::from(&value),
                     });
                     self.expr_store.range_to_semantic.insert(NodeRange::from(&value), SemanticId::Variant(variant_id));
                 }
@@ -350,7 +371,7 @@ impl ItemBuilder {
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      EVENT BUILDER                                                ///
+    ///                                MARK: EVENT BUILDER                                                ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -381,7 +402,7 @@ impl ItemBuilder {
 
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      ERROR BUILDER                                                ///
+    ///                                MARK: ERROR BUILDER                                                ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -411,7 +432,7 @@ impl ItemBuilder {
 
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      MODIF  IER BUILDER                                             ///
+    ///                                MARK: MODIFIER BUILDER                                             ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -440,7 +461,7 @@ impl ItemBuilder {
 
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      FUNCTION BUILDER                                             ///
+    ///                                MARK: FUNCTION BUILDER                                             ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
     
     pub fn build_fn(mut self, func: &Function) -> FunctionData {
@@ -449,22 +470,17 @@ impl ItemBuilder {
         let mut vis = Visibility::Internal;
         let mut mutability = Mutability::NonPayable;
         let mut parameters = Arena::new();
-        let mut params = Vec::new();
-        let mut rets = Vec::new();
+        let mut return_parameters = Arena::new();
 
         for child in node.named_children(&mut node.walk()) {
             match child.kind_id().into() {
                 NodeKind::PARAMETER => {
-                    if let Some(id) = self.build_parameter(&mut parameters, child) {
-                        params.push(id);
-                    }
+                    self.build_parameter(&mut parameters, child);
                 }
                 NodeKind::RETURN_DEFINITION => {
                     for ret_child in child.named_children(&mut child.walk()) {
                         if ret_child.kind_id() == NodeKind::PARAMETER {
-                            if let Some(id) = self.build_parameter(&mut parameters, ret_child) {
-                                rets.push(id);
-                            }
+                            self.build_parameter(&mut return_parameters, ret_child);
                         }
                     }
                 }
@@ -482,9 +498,8 @@ impl ItemBuilder {
             name,
             vis,
             mutability,
-            arg_params: params.into_boxed_slice(),
-            ret_params: rets.into_boxed_slice(),
             parameters,
+            return_parameters,
             expr_store: std::mem::take(&mut self.expr_store),
         }
     }
@@ -530,7 +545,7 @@ impl ItemBuilder {
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
-    ///                                      CONTRACT BUILDER                                             ///
+    ///                                MARK: CONTRACT BUILDER                                             ///
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     pub fn build_contract(mut self, contract: &Contract) -> ContractData {
@@ -559,6 +574,11 @@ impl ItemBuilder {
         }
     }
 
+
+     /////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///                               MARK: INTERFACE BUILDER                                             ///
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+    
     pub fn build_interface(mut self, interface: &Interface) -> InterfaceData {
         let node = interface.raw().node();
         let name = interface.name().unwrap_or_default();
@@ -585,6 +605,11 @@ impl ItemBuilder {
         }
     }
 
+
+     /////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///                                MARK: LIBRARY  BUILDER                                             ///
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+    
     pub fn build_library(mut self, library: &Library) -> LibraryData {
         let name = library.name().unwrap_or_default();
 
@@ -593,6 +618,62 @@ impl ItemBuilder {
         LibraryData {
             name,
             expr_store: std::mem::take(&mut self.expr_store),
+        }
+    }
+
+     /////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///                                   MARK: UDVT  BUILDER                                             ///
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+    
+    pub fn build_udvt(mut self, udvt: &Udvt) -> UdvtData {
+        let name = udvt.name().unwrap_or_default();
+        let underlying = Primitive::parse(&udvt.underlying().unwrap_or_default());
+
+        for node in udvt.raw().node().named_children(&mut udvt.raw().node().walk()) {
+            if node.kind_id() == NodeKind::IDENTIFIER {
+                self.lower_expr(node);
+            }
+            if node.kind_id() == NodeKind::PRIMITIVE_TYPE {
+                self.lower_type(node);
+            }
+        }
+        
+        UdvtData {
+            name,
+            underlying,
+            expr_store: std::mem::take(&mut self.expr_store),
+        }
+    }
+
+
+      ////////////////////////////////////////////////////////////////////////////////////////////////////////
+     ///                                   MARK: USING  BUILDER                                           ///
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    pub fn build_using(mut self, using: &Using) -> UsingData {
+        let mut sources = vec![];
+        let mut target = None;
+        let node = using.raw().node();
+
+        for child in node.named_children(&mut node.walk()) {
+            match child.kind_id().into() {
+                NodeKind::TYPE_ALIAS | NodeKind::USING_ALIAS => {
+                    let Some(source) = self.lower_expr(child) else {
+                        continue;
+                    };
+                    sources.push(source);
+                }
+                NodeKind::TYPE_NAME => {
+                    target = self.lower_type(child);
+                }
+                _ => {}
+            }
+        }
+        UsingData { 
+            target, 
+            sources: sources.into_boxed_slice(),
+            global: using.is_global(), 
+            expr_store: std::mem::take(&mut self.expr_store), 
         }
     }
 }

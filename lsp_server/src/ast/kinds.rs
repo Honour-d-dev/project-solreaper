@@ -39,78 +39,86 @@ impl NodeKind {
     pub const COMMENT: NodeKind = NodeKind(328);
     pub const SOURCE_FILE: NodeKind = NodeKind(329);
 
+    pub const USING_DIRECTIVE: NodeKind = NodeKind(369);
+    pub const ENUM_DEFINITION: NodeKind = NodeKind(363);
+    pub const EVENT_DEFINITION: NodeKind = NodeKind(365);
     pub const IMPORT_DIRECTIVE: NodeKind = NodeKind(339);
-    pub const CONTRACT_DEFINITION: NodeKind = NodeKind(350);
-    pub const FUNCTION_DEFINITION: NodeKind = NodeKind(420);
+    pub const ERROR_DEFINITION: NodeKind = NodeKind(351);
     pub const STRUCT_DEFINITION: NodeKind = NodeKind(360);
     pub const LIBRARY_DEFINITION: NodeKind = NodeKind(354);
-    pub const INTERFACE_DEFINITION: NodeKind = NodeKind(353);
-    pub const ENUM_DEFINITION: NodeKind = NodeKind(363);
-    pub const ERROR_DEFINITION: NodeKind = NodeKind(351);
     pub const MODIFIER_DEFINITION: NodeKind = NodeKind(417);
-    pub const EVENT_DEFINITION: NodeKind = NodeKind(365);
+    pub const CONTRACT_DEFINITION: NodeKind = NodeKind(350);
+    pub const FUNCTION_DEFINITION: NodeKind = NodeKind(420);
+    pub const INTERFACE_DEFINITION: NodeKind = NodeKind(353);
 
-    pub const INHERITANCE_SPECIFIER: NodeKind = NodeKind(357);
+    pub const ENUM_VALUE: NodeKind = NodeKind(528);
+    pub const STRUCT_BODY: NodeKind = NodeKind(362);
     pub const CONTRACT_BODY: NodeKind = NodeKind(358);
     pub const FUNCTION_BODY: NodeKind = NodeKind(426);
-    pub const STRUCT_BODY: NodeKind = NodeKind(362);
     pub const STRUCT_MEMBER: NodeKind = NodeKind(361);
-    pub const ENUM_VALUE: NodeKind = NodeKind(528);
+    pub const INHERITANCE_SPECIFIER: NodeKind = NodeKind(357);
 
     pub const PARAMETER: NodeKind = NodeKind(454);
     pub const ERROR_PARAMETER: NodeKind = NodeKind(352);
     pub const EVENT_PARAMETER: NodeKind = NodeKind(367);
-    pub const STATE_VAR_DECLARATION: NodeKind = NodeKind(412);
     pub const VAR_DECLARATION: NodeKind = NodeKind(398);
+    pub const STATE_VAR_DECLARATION: NodeKind = NodeKind(412);
     pub const VAR_DECLARATION_TUPLE: NodeKind = NodeKind(399);
     pub const CONST_VAR_DECLARATION: NodeKind = NodeKind(349);
     
     pub const STATEMENT: NodeKind = NodeKind(372);
-    pub const VAR_DECLARATION_STATEMENT: NodeKind = NodeKind(397);
-    pub const BLOCK_STATEMENT: NodeKind = NodeKind(396);
-    pub const FOR_STATEMENT: NodeKind = NodeKind(402);
     pub const IF_STATEMENT: NodeKind = NodeKind(401);
-    pub const WHILE_STATEMENT: NodeKind = NodeKind(403);
     pub const TRY_STATEMENT: NodeKind = NodeKind(408);
-    pub const DO_WHILE_STATEMENT: NodeKind = NodeKind(404);
+    pub const FOR_STATEMENT: NodeKind = NodeKind(402);
+    pub const BLOCK_STATEMENT: NodeKind = NodeKind(396);
+    pub const WHILE_STATEMENT: NodeKind = NodeKind(403);
     pub const RETURN_STATEMENT: NodeKind = NodeKind(410);
+    pub const DO_WHILE_STATEMENT: NodeKind = NodeKind(404);
     pub const EXPRESSION_STATEMENT: NodeKind = NodeKind(400);
-
-    pub const TYPE_NAME: NodeKind = NodeKind(448);
-    pub const PRIMITIVE_TYPE: NodeKind = NodeKind(460);
-    pub const USER_DEFINED_TYPE: NodeKind = NodeKind(456);
-    pub const RETURN_DEFINITION: NodeKind = NodeKind(421);
-    pub const RETURN_PARAMETER: NodeKind = NodeKind(453);
-    pub const VISIBILITY: NodeKind = NodeKind(413);
-    pub const STATE_MUTABILITY: NodeKind = NodeKind(414);
+    pub const VAR_DECLARATION_STATEMENT: NodeKind = NodeKind(397);
     
-    //      CONTEXT NODES
+    pub const TYPE_NAME: NodeKind = NodeKind(448);
+    pub const VISIBILITY: NodeKind = NodeKind(413);
+    pub const TYPE_ALIAS: NodeKind = NodeKind(530);
+    pub const USING_ALIAS: NodeKind = NodeKind(370);
+    pub const PRIMITIVE_TYPE: NodeKind = NodeKind(460);
+    pub const ANY_SOURCE_TYPE: NodeKind = NodeKind(371);
+    pub const RETURN_PARAMETER: NodeKind = NodeKind(453);
+    pub const STATE_MUTABILITY: NodeKind = NodeKind(414);
+    pub const RETURN_DEFINITION: NodeKind = NodeKind(421);
+    pub const USER_DEFINED_TYPE: NodeKind = NodeKind(456);
+    pub const USER_DEFINED_TYPE_DEFINITION: NodeKind = NodeKind(348);
+    
     pub const EXPRESSION: NodeKind = NodeKind(427);
-    pub const TUPLE_EXPRESSION: NodeKind = NodeKind(432);
-    pub const MODIFIER_INVOCATION: NodeKind = NodeKind(422);
-    pub const REVERT_STATEMENT: NodeKind = NodeKind(407);
+    pub const ARRAY_ACCESS: NodeKind = NodeKind(438);
+    pub const CALL_ARGUMENT: NodeKind = NodeKind(424);
     pub const EMIT_STATEMENT: NodeKind = NodeKind(411);
     pub const CALL_EXPRESSION: NodeKind = NodeKind(445);
-    pub const CALL_ARGUMENT: NodeKind = NodeKind(424);
     pub const REVERT_ARGUMENTS: NodeKind = NodeKind(529);
+    pub const TUPLE_EXPRESSION: NodeKind = NodeKind(432);
+    pub const REVERT_STATEMENT: NodeKind = NodeKind(407);
     pub const MEMBER_EXPRESSION: NodeKind = NodeKind(437);
-    pub const ARRAY_ACCESS: NodeKind = NodeKind(438);
     pub const BINARY_EXPRESSION: NodeKind = NodeKind(434);
-
-
-    pub const NUMBER_LITERAL: NodeKind = NodeKind(469);
-    pub const HEX_STRING_LITERAL: NodeKind = NodeKind(476);
-    pub const BOOLEAN_LITERAL: NodeKind = NodeKind(475);
+    pub const MODIFIER_INVOCATION: NodeKind = NodeKind(422);
+    pub const TYPECAST_EXPRESSION: NodeKind = NodeKind(429);
+    pub const META_TYPE_EXPRESSION: NodeKind = NodeKind(447);
+    
+    
     pub const STRING_LITERAL: NodeKind = NodeKind(478);
-
-
-
-//     UN-NAMED NODES
+    pub const NUMBER_LITERAL: NodeKind = NodeKind(469);
+    pub const BOOLEAN_LITERAL: NodeKind = NodeKind(475);
+    pub const HEX_STRING_LITERAL: NodeKind = NodeKind(476);
+    
+    
+    
+    //     UN-NAMED NODES
     pub const AS: NodeKind = NodeKind(21);
+    pub const TYPE: NodeKind = NodeKind(22);
+    pub const GLOBAL: NodeKind = NodeKind(48);
     pub const MEMORY: NodeKind = NodeKind(153);
     pub const STORAGE: NodeKind = NodeKind(154);
-    pub const CALLDATA: NodeKind = NodeKind(155);
     pub const CONSTANT: NodeKind = NodeKind(24);
+    pub const CALLDATA: NodeKind = NodeKind(155);
     pub const IMMUTABLE: NodeKind = NodeKind(172);
     // ...
 }

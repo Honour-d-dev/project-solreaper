@@ -10,6 +10,8 @@ use smallvec::SmallVec;
 use smol_str::SmolStr;
 
 use crate::ast::ImportId;
+use crate::ast::UdvtId;
+use crate::ast::UsingId;
 use crate::ast::{ContractId, EnumId, ErasedAstId, ErrorId, EventId, FunctionId, ImportType, InterfaceId, LibraryId, ModifierId, StructId, VarId};
 use crate::ir::item_tree::{ItemId, Import, ItemTree};
 use crate::salsa::{FileId, RootDatabase, SourceRootId};
@@ -21,6 +23,8 @@ type ScopeId = Idx<Scope>;
 pub enum DefId {
     File(FileId),
     Import(ImportId),
+    Udvt(UdvtId),
+    Using(UsingId),
     Contract(ContractId),
     Interface(InterfaceId),
     Library(LibraryId),
@@ -34,21 +38,23 @@ pub enum DefId {
 }
 
 impl DefId {
-    pub fn ast_id(&self) -> Option<(FileId, ErasedAstId)> {
-        Some(match self {
-            DefId::File(_) => return None,
-            DefId::Import(i) => (i.file, i.id.erase()),
-            DefId::Contract(c) => (c.file, c.id.erase()),
-            DefId::Interface(i) => (i.file, i.id.erase()),
-            DefId::Library(l) => (l.file, l.id.erase()),
-            DefId::Function(f) => (f.file, f.id.erase()),
-            DefId::Modifier(m) => (m.file, m.id.erase()),
-            DefId::Struct(s) => (s.file, s.id.erase()),
-            DefId::Event(e) => (e.file, e.id.erase()),
-            DefId::Enum(e) => (e.file, e.id.erase()),
-            DefId::Error(e) => (e.file, e.id.erase()),
-            DefId::Var(v) => (v.file, v.id.erase()),
-        })
+    pub fn file_id(&self) -> (FileId, Option<ErasedAstId>) {
+        match self {
+            DefId::File(f) => (*f, None),
+            DefId::Import(i) => (i.file, Some(i.id.erase())),
+            DefId::Udvt(u) => (u.file, Some(u.id.erase())),
+            DefId::Using(u) => (u.file, Some(u.id.erase())),
+            DefId::Contract(c) => (c.file, Some(c.id.erase())),
+            DefId::Interface(i) => (i.file, Some(i.id.erase())),
+            DefId::Library(l) => (l.file, Some(l.id.erase())),
+            DefId::Function(f) => (f.file, Some(f.id.erase())),
+            DefId::Modifier(m) => (m.file, Some(m.id.erase())),
+            DefId::Struct(s) => (s.file, Some(s.id.erase())),
+            DefId::Event(e) => (e.file, Some(e.id.erase())),
+            DefId::Enum(e) => (e.file, Some(e.id.erase())),
+            DefId::Error(e) => (e.file, Some(e.id.erase())),
+            DefId::Var(v) => (v.file, Some(v.id.erase())),
+        }
     }
 }
 
@@ -57,8 +63,8 @@ impl DefId {
 pub struct Scope {
     pub owner: DefId,
     pub parent: Option<ScopeId>,
-    pub by_name: FxHashMap<Name, ScopeData>
-    //TODO switch to namespace grouping
+    pub by_name: FxHashMap<Name, ScopeData>,
+    pub usings: Option<Vec<DefId>>
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -79,8 +85,9 @@ pub enum Namespace {
 
 impl Namespace {
     pub fn from(def: &DefId) -> Namespace {
-        match def {//TODO might remove imports from type namespace to its own.
-            DefId::File(_) | DefId::Import(_) | DefId::Contract(_) | DefId::Interface(_) | DefId::Library(_) | DefId::Struct(_) | DefId::Enum(_) => Namespace::Type,
+        match def {//TODO might remove imports/using from type namespace to its own.
+            DefId::File(_) | DefId::Import(_) | DefId::Contract(_) | DefId::Interface(_) | DefId::Library(_) | 
+            DefId::Struct(_) | DefId::Enum(_) | DefId::Udvt(_) | DefId::Using(_) => Namespace::Type,
             DefId::Function(_) |DefId::Modifier(_)  => Namespace::Function,
             DefId::Event(_) => Namespace::Event,
             DefId::Error(_) => Namespace::Error,
@@ -98,7 +105,7 @@ pub struct DefData {
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
-pub struct Unresolved {
+pub struct UnresolvedImports {
     pub imports: Vec<Import>,
 }
 
@@ -122,7 +129,7 @@ pub struct DefMap {
     pub files: FxHashMap<FileId, FileData>,
     pub scopes: Arena<Scope>,
     pub defs: FxHashMap<DefId, DefData>,
-    pub unresolved: FxHashMap<FileId, Unresolved>,
+    pub unresolved: FxHashMap<FileId, UnresolvedImports>,
 }
 
 pub struct FileCollector<'db, 'collector> {
@@ -143,7 +150,6 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
             match item_id {
                 ItemId::Import(id) => {
                     //@NOTE import defs are not collected in the defmap scopes
-                    //Which means nothing can resolve to an import!
                     let import = &self.item_tree[id];
                     let def_data = DefData {
                         name: None,
@@ -152,7 +158,17 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
                     };
                     let id = DefId::Import(ImportId { file: self.file, id });
                     self.collector.defs.insert(id, def_data);
-                    self.collector.unresolved.entry(self.file).or_default().imports.push(import.clone());
+                    self.collector.unresolved_imports.entry(self.file).or_default().imports.push(import.clone());
+                }
+                ItemId::Using(id) => {
+                    let data = DefData {
+                        name: None,
+                        scope: scope_id,
+                        child_scope: None,
+                    };
+                    let id = DefId::Using(UsingId { file: self.file, id });
+                    self.collector.defs.insert(id, data);
+                    self.collector.scopes[scope_id].usings.get_or_insert_with(Vec::new).push(id);
                 }
                 ItemId::Contract(id) => {
                     let c = &self.item_tree[id];
@@ -168,6 +184,11 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
                     let l = &self.item_tree[id];
                     let id = DefId::Library(LibraryId { file: self.file, id });
                     self.collect_container(id, scope_id, l.name.clone(), &l.members);
+                }
+                ItemId::Udvt(id) => {
+                    let u = &self.item_tree[id];
+                    let id = DefId::Udvt(UdvtId { file: self.file, id });
+                    self.collect_def(id, scope_id, None, u.name.clone().unwrap_or_default());
                 }
                 ItemId::Struct(id) => {//TODO: collect fields. Do we create struct scopes for fields??
                     let s = &self.item_tree[id];
@@ -211,7 +232,12 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
 
     fn collect_file(&mut self) -> ScopeId {
         let id = DefId::File(self.file);
-        let scope_id = self.collector.scopes.alloc(Scope {owner: id, parent: None, by_name: FxHashMap::default() });
+        let scope_id = self.collector.scopes.alloc(Scope {
+            owner: id, 
+            parent: None, 
+            by_name: FxHashMap::default(), 
+            usings: Default::default() 
+        });
 
         self.collector.files.insert(self.file, FileData {
             id,
@@ -233,6 +259,7 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
             owner: id,
             parent: Some(scope_id),
             by_name: FxHashMap::default(),
+            usings: Default::default()
         };
         
         let sub_scope_id = self.collector.scopes.alloc(sub_scope);
@@ -254,6 +281,17 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
                 ItemId::Error(id) => (DefId::Error(ErrorId { file: self.file, id }), self.item_tree[id].name.clone()),
                 ItemId::Modifier(id) => (DefId::Modifier(ModifierId { file: self.file, id }), self.item_tree[id].name.clone()),
                 ItemId::Var(id) => (DefId::Var(VarId { file: self.file, id }), self.item_tree[id].name.clone()),
+                ItemId::Using(id) => {
+                    let data = DefData {
+                        name: None,
+                        scope: parent_scope,
+                        child_scope: None,
+                    };
+                    let id = DefId::Using(UsingId { file: self.file, id });
+                    self.collector.defs.insert(id, data);
+                    self.collector.scopes[parent_scope].usings.get_or_insert_with(Vec::new).push(id);
+                    continue
+                }
                 _ => continue
             };
 
@@ -294,7 +332,7 @@ pub struct Collector<'db> {
     pub files: FxHashMap<FileId, FileData>,
     pub scopes: Arena<Scope>,
     pub defs: FxHashMap<DefId, DefData>,
-    pub unresolved: FxHashMap<FileId, Unresolved>,
+    pub unresolved_imports: FxHashMap<FileId, UnresolvedImports>
 }
 
 
@@ -308,7 +346,7 @@ impl<'db> Collector<'db> {
             files: FxHashMap::default(),
             scopes: Arena::default(),
             defs: FxHashMap::default(),
-            unresolved: FxHashMap::default(),
+            unresolved_imports: FxHashMap::default(),
         };
 
         for file in files.iter() {
@@ -326,7 +364,7 @@ impl<'db> Collector<'db> {
             files: collector.files,
             scopes: collector.scopes,
             defs: collector.defs,
-            unresolved: collector.unresolved,
+            unresolved: collector.unresolved_imports,
         }
     }
 
@@ -339,7 +377,7 @@ impl<'db> Collector<'db> {
     /// 
     /// Now we have an import loop. where all files(A,B,C) essentially have/share the same global scope.
     fn resolve_imports(&mut self) {
-        while let Some(&file_id) = self.unresolved.keys().next() {
+        while let Some(&file_id) = self.unresolved_imports.keys().next() {
             let mut seen = FxHashSet::default();
             seen.insert(file_id);
             assert_eq!(self.resolve(file_id, &mut seen),Resolver::Finished, "Unable to resolve imports due to cyclic dependency in file {:?}", file_id);
@@ -349,9 +387,9 @@ impl<'db> Collector<'db> {
 
     
     fn resolve(&mut self, file_id: FileId, chain: &mut FxHashSet<FileId>) -> Resolver {
-        let mut unresolved = match self.unresolved.get_mut(&file_id) {
+        let mut unresolved = match self.unresolved_imports.get_mut(&file_id) {
             Some(u) => mem::take(u),
-            None => Unresolved::default(),
+            None => UnresolvedImports::default(),
         };
         let mut resolved_paths = FxHashSet::default();
         let mut resolver = Resolver::Finished;
@@ -364,7 +402,7 @@ impl<'db> Collector<'db> {
 
             // same root
             if self.root == other_root {
-                if self.unresolved.contains_key(&dep) {
+                if self.unresolved_imports.contains_key(&dep) {
                     if chain.insert(dep){//@FIXME: fix to support multiple imports/import_directives from same file
                         match self.resolve(dep, chain) {
                             Resolver::Finished => {
@@ -395,14 +433,14 @@ impl<'db> Collector<'db> {
             f @ Resolver::Finished=> {
                 //a cycle isn't just "we've seen this file before", but we've seen this file in this chain/dependency path before.
                 // if a path resolves it is removed from the chain as we unwind
-                self.unresolved.remove(&file_id);//it should be empty atp
+                self.unresolved_imports.remove(&file_id);//it should be empty atp
                 chain.remove(&file_id);
                 f
             }
             c @ Resolver::Cycle(_) => {
                 //unresolved, so we prune instead and reinsert
                 unresolved.imports.retain(|i| !resolved_paths.contains(&i.path));
-                self.unresolved.insert(file_id, unresolved);
+                self.unresolved_imports.insert(file_id, unresolved);
                 c
             }
         }
@@ -450,7 +488,37 @@ impl<'db> Collector<'db> {
                 }
             }
         }
+        self.extend_global_usings(file, dep, dep_root);
     }
+
+    fn extend_global_usings(&mut self, file: FileId, dep: FileId, dep_root: SourceRootId) {
+        let dep_data = self.file_data(dep_root, dep);
+        let file_scope = self.files.get(&file).unwrap().scope;
+        // DFS resolution guarantees all globals (up to this point) are already accumulated in dep scope. no need to check imported scopes
+        let to_add: Vec<DefId> = {
+            let other_defmap;
+            let usings = if self.root == dep_root {
+                self.scopes[dep_data.scope].usings.as_deref()
+            } else {
+                other_defmap = self.db.root_def_map(dep_root);
+                other_defmap.scopes[dep_data.scope].usings.as_deref()
+            };
+            usings.into_iter().flatten().filter(|&using_def| {
+                if let DefId::Using(using_id) = using_def {
+                    self.db.item_tree(using_id.file)[using_id.id].is_global
+                } else {
+                    false
+                }
+            }).copied().collect()
+        };
+        for using_def in to_add {
+            let file_usings = self.scopes[file_scope].usings.get_or_insert_with(Vec::new);
+            if !file_usings.contains(&using_def) {
+                file_usings.push(using_def);
+            }
+        }
+    }
+
 
     fn file_data(&self, root: SourceRootId, file: FileId) -> FileData {
         if self.root == root {

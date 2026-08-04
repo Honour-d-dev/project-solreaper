@@ -12,7 +12,7 @@ use super::files::Files;
 use super::incremental_parser::IncrementalParser;
 use super::root_db::RootDatabase;
 use crate::ast::kinds::NodeKind;
-use crate::ast::{self, Ast, AstNode, NodeRange};
+use crate::ast::{self, AstNode, NodeRange};
 use crate::ir::def_map::DefId;
 use crate::hir::body_map::ByteOffset;
 use crate::loader::SourceRootBundle;
@@ -195,6 +195,8 @@ impl SalsaDatabase {
                     INTERFACE_DEFINITION => Interface => InterfaceId,
                     LIBRARY_DEFINITION => Library => LibraryId,
                     IMPORT_DIRECTIVE => Import => ImportId => break,
+                    USING_DIRECTIVE => Using => UsingId => break,
+                    USER_DEFINED_TYPE_DEFINITION => Udvt => UdvtId => break,
                     FUNCTION_DEFINITION => Function => FunctionId => break,
                     MODIFIER_DEFINITION => Modifier => ModifierId => break,
                     STRUCT_DEFINITION => Struct => StructId => break,

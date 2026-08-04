@@ -54,10 +54,13 @@ impl<N> AstId<N> {
 
 
 pub fn is_supported_node(node: &Node<'_>) -> bool {
-    matches!(// I dont know if i want the identifiers yet, everything basically contains one, i guess lookup will determine
+    matches!(
         NodeKind::from(node.kind_id()),
         NodeKind::IMPORT_DIRECTIVE
+        | NodeKind::USING_DIRECTIVE
+        | NodeKind::USER_DEFINED_TYPE_DEFINITION
         | NodeKind::CONTRACT_DEFINITION
+        | NodeKind::CONTRACT_BODY
         | NodeKind::INTERFACE_DEFINITION
         | NodeKind::LIBRARY_DEFINITION
         | NodeKind::FUNCTION_DEFINITION
@@ -66,7 +69,6 @@ pub fn is_supported_node(node: &Node<'_>) -> bool {
         | NodeKind::EVENT_DEFINITION
         | NodeKind::ERROR_DEFINITION
         | NodeKind::MODIFIER_DEFINITION
-        | NodeKind::CONTRACT_BODY //covers interface & library bodies: should this be a parent? the parent should be the contract definition, no?
         | NodeKind::STATE_VAR_DECLARATION
         | NodeKind::CONST_VAR_DECLARATION
     )
@@ -84,7 +86,7 @@ impl AstIdMap {
         assert!(root.is_root());
 
         // Very shallow/simplified id allocation algo for now: does BFS
-        // id system only works for 2 layers, thankfully we don't need more than 2 layers
+        // This id system only works for 2 layers, thankfully we don't need more than 2 layers
         // Global layer: consts, free fns, contracts/interface/library etc.
         // 2nd layer: contract/interface/library members
         // everything below function level is ignored
@@ -232,6 +234,18 @@ impl NodePtr {
 pub struct ImportId {
     pub file: FileId,
     pub id: AstId<ast::Import>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UdvtId {
+    pub file: FileId,
+    pub id: AstId<ast::Udvt>
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UsingId {
+    pub file: FileId,
+    pub id: AstId<ast::Using>
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

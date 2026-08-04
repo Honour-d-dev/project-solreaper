@@ -17,6 +17,8 @@ use crate::salsa::{File, RootDatabase};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ItemId {
     Import(AstId<ast::Import>),
+    Using(AstId<ast::Using>),
+    Udvt(AstId<ast::Udvt>),
     Contract(AstId<ast::Contract>),
     Interface(AstId<ast::Interface>),
     Library(AstId<ast::Library>),
@@ -35,6 +37,8 @@ pub enum ItemId {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Item {
     Import(Import),
+    Using(Using),
+    Udvt(Udvt),
     Contract(Contract),
     Interface(Interface),
     Library(Library),
@@ -84,6 +88,26 @@ impl Lowerer {
                     };
                     self.data.insert(id.erase(), Item::Import(import));
                     self.top_level.push(ItemId::Import(id));
+                },
+                Some(ast::Item::Udvt(u)) => {
+                    let Some(id) = self.ast_id_map.id_of(&u) else {continue;};
+                    let Some(underlying) = u.underlying() else {continue;};
+                    let udvt = Udvt {
+                        name: u.name(),
+                        underlying,
+                    };
+                    self.data.insert(id.erase(), Item::Udvt(udvt));
+                    self.top_level.push(ItemId::Udvt(id));
+                }
+                Some(ast::Item::Using(u)) => {
+                    let Some(id) = self.ast_id_map.id_of(&u) else {continue;};
+                    let using = Using {
+                        target: u.target(),
+                        sources: u.sources(),
+                        is_global: u.is_global(),
+                    };
+                    self.data.insert(id.erase(), Item::Using(using));
+                    self.top_level.push(ItemId::Using(id));
                 },
                 Some(ast::Item::Contract(c)) => {
                     let Some(id) = self.ast_id_map.id_of(&c) else{continue;};
@@ -168,7 +192,7 @@ impl Lowerer {
                     self.top_level.push(ItemId::Modifier(id));
                     self.data.insert(id.erase(), Item::Modifier(modifier));
                 },
-                _ => continue,//is exhaustive ,but to prevent external changes to item from from breaking here. REMIND: change to None
+                _ => {}
            }
 
         }
@@ -178,6 +202,16 @@ impl Lowerer {
         let mut result = Vec::new();
         for member in members.into_iter() {
             match member {
+                ast::Item::Using(u) => {
+                    let Some(id) = self.ast_id_map.id_of(&u) else {continue;};
+                    let using = Using {
+                        target: u.target(),
+                        sources: u.sources(),
+                        is_global: u.is_global(),
+                    };
+                    result.push(ItemId::Using(id));
+                    self.data.insert(id.erase(), Item::Using(using));
+                },
                 ast::Item::Function(f) => {
                     let Some(id) = self.ast_id_map.id_of(&f) else {continue;};
                     let function = Function {
@@ -278,16 +312,18 @@ macro_rules! impl_item_tree_index {
 
 impl_item_tree_index! {
     ast::Import => Import,
+    ast::Using => Using,
+    ast::Udvt => Udvt,
     ast::Contract => Contract,
     ast::Interface => Interface,
     ast::Library => Library,
     ast::Function => Function,
-    ast::Var => Var,
     ast::Struct => Struct,
     ast::Enum => Enum,
     ast::Event => Event,
     ast::Error => Error,
     ast::Modifier => Modifier,
+    ast::Var => Var,
 }
 ///////////////////////////////////// MIR ///////////////////////////////////////////
 ///                             Item_tree::Nodes                                 ///
@@ -297,6 +333,20 @@ impl_item_tree_index! {
 pub struct Import {
     pub path: Name,//tecnically not a small str but just to capitalize on the cheap clones
     pub import_type: ImportType,
+}
+
+
+#[derive(Debug,Clone, PartialEq, Eq)]
+pub struct Using {
+    pub target: Option<Name>,
+    pub sources: Box<[Name]>,
+    pub is_global: bool,
+}
+
+#[derive(Debug,Clone, PartialEq, Eq)]
+pub struct Udvt {
+    pub name: Option<Name>,
+    pub underlying: Name,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]

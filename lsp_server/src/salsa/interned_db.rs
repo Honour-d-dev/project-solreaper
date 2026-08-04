@@ -1,4 +1,5 @@
 
+//@TODO unify the ids. might use this directly in the defmaps
 use crate::ast;
 use crate::hir::body_map::BodyOwnerId;
 use crate::ir::def_map::DefId;
@@ -72,6 +73,16 @@ pub struct Error<'db> {
 #[salsa::interned]
 pub struct Var<'db> {
     pub id: ast::VarId
+}
+
+#[salsa::interned]
+pub struct Udvt<'db> {
+    pub id: ast::UdvtId
+}
+
+#[salsa::interned]
+pub struct Using<'db> {
+    pub id: ast::UsingId
 }
 
 
