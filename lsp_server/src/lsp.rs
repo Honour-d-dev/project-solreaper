@@ -1,3 +1,4 @@
+use crate::capabilities::definition::definition;
 use crate::capabilities::hover::hover;
 use crate::loader;
 use crate::salsa::{SalsaDb};
@@ -9,7 +10,7 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidOpenTextDocument, Initialized,
     Notification as LspNotification,
 };
-use lsp_types::request::{HoverRequest, Request as LspRequest};
+use lsp_types::request::{GotoDefinition, HoverRequest, Request as LspRequest};
 use lsp_types::{
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
 };
@@ -65,7 +66,15 @@ impl SolidityLspServer {
             };
             return Ok(());
         }
-    
+
+        if request.method == GotoDefinition::METHOD {
+            match definition(&self.db, request) {
+                Ok(response) => self.sender.send(Message::Response(response))?,
+                Err(err) => log_info(format!("No definition location: Error - {}", err)),
+            };
+            return Ok(());
+        }
+
         log_info(format!("Ignoring unsupported request: {}", request.method));
         let response = Response::new_ok(request.id, serde_json::Value::Null);
         self.sender.send(Message::Response(response))?;

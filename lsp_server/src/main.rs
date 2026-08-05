@@ -14,7 +14,7 @@ use lsp::SolidityLspServer;
 use anyhow::{Context};
 use lsp_server::Connection;
 use lsp_types::{
-    HoverProviderCapability, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind
+    HoverProviderCapability, OneOf, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 
 
@@ -26,9 +26,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("lsp_server=info"))
         .add_directive("lsp_server::msg=off".parse().expect("valid tracing directive"))
         .add_directive("lsp_server::stdio=off".parse().expect("valid tracing directive"));
-        // .add_directive("ignore=off".parse().expect("valid tracing directive"))
-        // .add_directive("globset=off".parse().expect("valid tracing directive"))
-        // .add_directive("salsa=off".parse().expect("valid tracing directive"));
+        
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -44,6 +42,7 @@ fn main() -> anyhow::Result<()> {
     let server_capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
 
