@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.svg" alt="SolReapr logo" width="480" />
+  <img src="logo.svg" alt="SolReapr logo" width="320" />
 </p>
 
 <h1 align="center" style="margin-bottom: 0;">SolReapr</h1>
