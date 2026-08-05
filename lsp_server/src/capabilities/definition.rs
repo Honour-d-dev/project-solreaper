@@ -1,5 +1,4 @@
 use anyhow::{Context as _, Result};
-use la_arena::Arena;
 use lsp_server::{Request, Response};
 use lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Location as LspLocation, Position, Range, Url,
@@ -8,7 +7,7 @@ use ropey::Rope;
 
 use crate::ast::NodeRange;
 use crate::hir::body_map::{BodyOwnerId, BodySourceMap, SemanticId};
-use crate::hir::item_data::{EnumData, ExprStore, Field};
+use crate::hir::item_data::ExprStore;
 use crate::hir::resolver::{Context, Resolution, Resolver};
 use crate::hir::types::{Type, TypeName};
 use crate::ir::def_map::DefId;
@@ -16,10 +15,7 @@ use crate::salsa::root_db::RootDatabase;
 use crate::salsa::{File, HirDatabase, SalsaDb};
 use crate::utilities::to_utf8path;
 
-struct SemanticOwner<'a> {
-    fields: Option<&'a Arena<Field>>,
-    enum_data: Option<&'a EnumData>,
-}
+use super::SemanticCtx;
 
 enum DefinitionTarget {
     Def(DefId),
@@ -70,10 +66,7 @@ fn resolve_at<'db>(
                 body.expr_store.range_to_semantic.get(&range),
                 &body.expr_store,
                 Some(&sourcemap),
-                SemanticOwner {
-                    fields: None,
-                    enum_data: None,
-                },
+                SemanticCtx::local(&body.locals),
             )
         }
         DefId::Modifier(id) => {
@@ -85,10 +78,7 @@ fn resolve_at<'db>(
                 body.expr_store.range_to_semantic.get(&range),
                 &body.expr_store,
                 Some(&sourcemap),
-                SemanticOwner {
-                    fields: None,
-                    enum_data: None,
-                },
+                SemanticCtx::local(&body.locals),
             )
         }
         DefId::Struct(id) => {
@@ -100,10 +90,7 @@ fn resolve_at<'db>(
                 data.expr_store.range_to_semantic.get(&range),
                 &data.expr_store,
                 None,
-                SemanticOwner {
-                    fields: Some(&data.fields),
-                    enum_data: None,
-                },
+                SemanticCtx::field(&data.fields),
             )
         }
         DefId::Enum(id) => {
@@ -115,11 +102,36 @@ fn resolve_at<'db>(
                 data.expr_store.range_to_semantic.get(&range),
                 &data.expr_store,
                 None,
-                SemanticOwner {
-                    fields: None,
-                    enum_data: Some(&data),
-                },
+                SemanticCtx::variant(&data),
             )
+        }
+        DefId::Event(id) => {
+            let data = db.event_data(id);
+            resolve_semantic(
+                db,
+                resolver,
+                ctx.file,
+                data.expr_store.range_to_semantic.get(&range),
+                &data.expr_store,
+                None,
+                SemanticCtx::local(&data.parameters),
+            )
+        }
+        DefId::Error(id) => {
+            let data = db.error_data(id);
+            resolve_semantic(
+                db,
+                resolver,
+                ctx.file,
+                data.expr_store.range_to_semantic.get(&range),
+                &data.expr_store,
+                None,
+                SemanticCtx::local(&data.parameters),
+            )
+        }
+        DefId::Udvt(id) => {
+            let data = db.udvt_data(id);
+            resolve_item_semantic(db, resolver, ctx.file, range, &data.expr_store)
         }
         DefId::Contract(id) => {
             let data = db.contract_data(id);
@@ -163,10 +175,7 @@ fn resolve_item_semantic<'db>(
         store.range_to_semantic.get(&range),
         store,
         None,
-        SemanticOwner {
-            fields: None,
-            enum_data: None,
-        },
+        SemanticCtx::empty(),
     )
 }
 
@@ -177,7 +186,7 @@ fn resolve_semantic<'db>(
     semantic: Option<&SemanticId>,
     store: &ExprStore,
     sourcemap: Option<&BodySourceMap>,
-    owner: SemanticOwner<'_>,
+    ctx: SemanticCtx<'_>,
 ) -> Vec<DefinitionTarget> {
     let Some(semantic) = semantic else {
         return Vec::new();
@@ -185,12 +194,12 @@ fn resolve_semantic<'db>(
 
     match semantic {
         SemanticId::Local(local_id) => local_definition(file, store, *local_id),
-        SemanticId::Field(field_id) => owner
+        SemanticId::Field(field_id) => ctx
             .fields
             .map(|fields| &fields[*field_id])
             .map(|field| vec![DefinitionTarget::Range(file, field.range)])
             .unwrap_or_default(),
-        SemanticId::Variant(variant_id) => owner
+        SemanticId::Variant(variant_id) => ctx
             .enum_data
             .map(|data| &data.variants[*variant_id])
             .map(|variant| vec![DefinitionTarget::Range(file, variant.range)])

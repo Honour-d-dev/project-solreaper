@@ -51,14 +51,14 @@ impl NodeKind {
     pub const FUNCTION_DEFINITION: NodeKind = NodeKind(420);
     pub const INTERFACE_DEFINITION: NodeKind = NodeKind(353);
 
-    pub const ENUM_VALUE: NodeKind = NodeKind(528);
+    pub const ENUM_VALUE: NodeKind = NodeKind(529);
     pub const STRUCT_BODY: NodeKind = NodeKind(362);
     pub const CONTRACT_BODY: NodeKind = NodeKind(358);
     pub const FUNCTION_BODY: NodeKind = NodeKind(426);
     pub const STRUCT_MEMBER: NodeKind = NodeKind(361);
     pub const INHERITANCE_SPECIFIER: NodeKind = NodeKind(357);
 
-    pub const PARAMETER: NodeKind = NodeKind(454);
+    pub const PARAMETER: NodeKind = NodeKind(455);
     pub const ERROR_PARAMETER: NodeKind = NodeKind(352);
     pub const EVENT_PARAMETER: NodeKind = NodeKind(367);
     pub const VAR_DECLARATION: NodeKind = NodeKind(398);
@@ -83,7 +83,7 @@ impl NodeKind {
     pub const USING_ALIAS: NodeKind = NodeKind(370);
     pub const PRIMITIVE_TYPE: NodeKind = NodeKind(461);
     pub const ANY_SOURCE_TYPE: NodeKind = NodeKind(371);
-    pub const RETURN_PARAMETER: NodeKind = NodeKind(453);
+    pub const RETURN_PARAMETER: NodeKind = NodeKind(454);
     pub const STATE_MUTABILITY: NodeKind = NodeKind(414);
     pub const RETURN_DEFINITION: NodeKind = NodeKind(421);
     pub const USER_DEFINED_TYPE: NodeKind = NodeKind(457);

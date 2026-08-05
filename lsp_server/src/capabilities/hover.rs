@@ -15,31 +15,7 @@ use crate::ir::def_map::DefId;
 use crate::salsa::{File, HirDatabase, SalsaDb};
 use crate::utilities::{log_info, to_utf8path};
 
-
-
-struct SemanticCtx<'a> {
-    locals: Option<&'a Arena<Local>>,
-    fields: Option<&'a Arena<Field>>,
-    enum_data: Option<&'a EnumData>,
-}
-
-impl<'a> SemanticCtx<'a> {
-    pub fn empty() -> Self {
-        SemanticCtx { locals: None, fields: None, enum_data: None }
-    }
-
-    pub fn local(locals: &'a Arena<Local>) -> Self {
-        SemanticCtx { locals: Some(locals), fields: None, enum_data: None }
-    }
-
-    pub fn field(fields: &'a Arena<Field>) -> Self {
-        SemanticCtx { locals: None, fields: Some(fields), enum_data: None }
-    }
-
-    pub fn variant(enum_data: &'a EnumData) -> Self {
-        SemanticCtx { locals: None, fields: None, enum_data: Some(enum_data) }
-    }
-}
+use super::SemanticCtx;
 
 
 
