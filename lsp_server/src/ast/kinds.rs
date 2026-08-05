@@ -77,37 +77,37 @@ impl NodeKind {
     pub const EXPRESSION_STATEMENT: NodeKind = NodeKind(400);
     pub const VAR_DECLARATION_STATEMENT: NodeKind = NodeKind(397);
     
-    pub const TYPE_NAME: NodeKind = NodeKind(448);
+    pub const TYPE_NAME: NodeKind = NodeKind(449);
     pub const VISIBILITY: NodeKind = NodeKind(413);
-    pub const TYPE_ALIAS: NodeKind = NodeKind(530);
+    pub const TYPE_ALIAS: NodeKind = NodeKind(531);
     pub const USING_ALIAS: NodeKind = NodeKind(370);
-    pub const PRIMITIVE_TYPE: NodeKind = NodeKind(460);
+    pub const PRIMITIVE_TYPE: NodeKind = NodeKind(461);
     pub const ANY_SOURCE_TYPE: NodeKind = NodeKind(371);
     pub const RETURN_PARAMETER: NodeKind = NodeKind(453);
     pub const STATE_MUTABILITY: NodeKind = NodeKind(414);
     pub const RETURN_DEFINITION: NodeKind = NodeKind(421);
-    pub const USER_DEFINED_TYPE: NodeKind = NodeKind(456);
+    pub const USER_DEFINED_TYPE: NodeKind = NodeKind(457);
     pub const USER_DEFINED_TYPE_DEFINITION: NodeKind = NodeKind(348);
     
     pub const EXPRESSION: NodeKind = NodeKind(427);
-    pub const ARRAY_ACCESS: NodeKind = NodeKind(438);
+    pub const ARRAY_ACCESS: NodeKind = NodeKind(439);
     pub const CALL_ARGUMENT: NodeKind = NodeKind(424);
     pub const EMIT_STATEMENT: NodeKind = NodeKind(411);
-    pub const CALL_EXPRESSION: NodeKind = NodeKind(445);
-    pub const REVERT_ARGUMENTS: NodeKind = NodeKind(529);
+    pub const CALL_EXPRESSION: NodeKind = NodeKind(446);
+    pub const REVERT_ARGUMENTS: NodeKind = NodeKind(530);
     pub const TUPLE_EXPRESSION: NodeKind = NodeKind(432);
     pub const REVERT_STATEMENT: NodeKind = NodeKind(407);
-    pub const MEMBER_EXPRESSION: NodeKind = NodeKind(437);
+    pub const MEMBER_EXPRESSION: NodeKind = NodeKind(438);
     pub const BINARY_EXPRESSION: NodeKind = NodeKind(434);
     pub const MODIFIER_INVOCATION: NodeKind = NodeKind(422);
     pub const TYPECAST_EXPRESSION: NodeKind = NodeKind(429);
-    pub const META_TYPE_EXPRESSION: NodeKind = NodeKind(447);
+    pub const META_TYPE_EXPRESSION: NodeKind = NodeKind(448);
     
     
-    pub const STRING_LITERAL: NodeKind = NodeKind(478);
-    pub const NUMBER_LITERAL: NodeKind = NodeKind(469);
-    pub const BOOLEAN_LITERAL: NodeKind = NodeKind(475);
-    pub const HEX_STRING_LITERAL: NodeKind = NodeKind(476);
+    pub const STRING_LITERAL: NodeKind = NodeKind(469);
+    pub const NUMBER_LITERAL: NodeKind = NodeKind(470);
+    pub const BOOLEAN_LITERAL: NodeKind = NodeKind(476);
+    pub const HEX_STRING_LITERAL: NodeKind = NodeKind(477);
     
     
     
