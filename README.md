@@ -2,13 +2,13 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="logo.svg">
-    <img src="logo.svg" alt="SolReapr logo" width="320" />
+    <img src="logo.svg" alt="SolRepr logo" width="320" />
   </picture>
 </p>
 
-<h1 align="center" style="margin-bottom: 0;">SolReapr</h1>
+<h1 align="center" style="margin-bottom: 0;">SolRepr</h1>
 <p align="center" style="margin-top: -12px;">
-  A semantic analyzer and language server for Solidity, built in Rust.
+  A semantic repr. analyzer and language server for Solidity, built in Rust.
 </p>
 
 <p align="center">
