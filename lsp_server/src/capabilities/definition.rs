@@ -6,10 +6,10 @@ use lsp_types::{
 use ropey::Rope;
 
 use crate::ast::NodeRange;
-use crate::hir::body_map::{BodyOwnerId, BodySourceMap, SemanticId};
+use crate::hir::body_map::{BodyOwnerId, BodySourceMap, LocalId, SemanticId};
 use crate::hir::item_data::ExprStore;
 use crate::hir::resolver::{Context, Resolution, Resolver};
-use crate::hir::types::{Type, TypeName};
+use crate::hir::types::TypeName;
 use crate::ir::def_map::DefId;
 use crate::salsa::root_db::RootDatabase;
 use crate::salsa::{File, HirDatabase, SalsaDb};
@@ -20,6 +20,7 @@ use super::SemanticCtx;
 enum DefinitionTarget {
     Def(DefId),
     Range(File, NodeRange),
+    File(File),
 }
 
 pub fn definition(db: &SalsaDb, request: Request) -> Result<Response> {
@@ -206,18 +207,15 @@ fn resolve_semantic<'db>(
             .unwrap_or_default(),
         SemanticId::Expr(expr_id) => resolver
             .resolve_expr(*expr_id, store, sourcemap)
-            .map(|resolution| match resolution {
-                Resolution::Local(local_id) => local_definition(file, store, local_id),
-                resolution => resolution_targets(db, resolution),
-            })
+            .map(|resolution| resolution_targets(db, file, store, resolution))
             .unwrap_or_default(),
         SemanticId::Type(type_id) => type_path(store, *type_id, u8::MAX)
             .and_then(|path| resolver.resolve_path(path))
-            .map(|resolution| resolution_targets(db, resolution))
+            .map(|resolution| resolution_targets(db, file, store, resolution))
             .unwrap_or_default(),
         SemanticId::TypeSegment { ty, segment } => type_path(store, *ty, *segment)
             .and_then(|path| resolver.resolve_path(path))
-            .map(|resolution| resolution_targets(db, resolution))
+            .map(|resolution| resolution_targets(db, file, store, resolution))
             .unwrap_or_default(),
     }
 }
@@ -225,7 +223,7 @@ fn resolve_semantic<'db>(
 fn local_definition(
     file: File,
     store: &ExprStore,
-    local_id: crate::hir::body_map::LocalId,
+    local_id: LocalId,
 ) -> Vec<DefinitionTarget> {
     store
         .range_to_semantic
@@ -255,10 +253,24 @@ fn type_path(
     Some(&path.segments[..end])
 }
 
-fn resolution_targets(db: &SalsaDb, resolution: Resolution) -> Vec<DefinitionTarget> {
+fn resolution_targets(
+    db: &SalsaDb,
+    file: File,
+    store: &ExprStore,
+    resolution: Resolution,
+) -> Vec<DefinitionTarget> {
     match resolution {
-        Resolution::Def(def) => vec![DefinitionTarget::Def(def)],
-        Resolution::Defs(defs) => defs.iter().copied().map(DefinitionTarget::Def).collect(),
+        Resolution::Local(local_id) => local_definition(file, store, local_id),
+        Resolution::Var(def) => vec![DefinitionTarget::Def(def)],
+        Resolution::File(file) => vec![DefinitionTarget::File(file)],
+        Resolution::Callable(callable) => callable
+            .def()
+            .map(|def| vec![DefinitionTarget::Def(def)])
+            .unwrap_or_default(),
+        Resolution::Callables(callables) => callables
+            .iter()
+            .filter_map(|callable| callable.def().map(DefinitionTarget::Def))
+            .collect(),
         Resolution::Type(ty) | Resolution::MetaType(ty) => ty
             .def_id()
             .map(|def| vec![DefinitionTarget::Def(def)])
@@ -267,15 +279,15 @@ fn resolution_targets(db: &SalsaDb, resolution: Resolution) -> Vec<DefinitionTar
             .def_id()
             .map(|def| vec![DefinitionTarget::Def(def)])
             .unwrap_or_default(),
-        Resolution::Field(type_key, field_id) => match type_key.typ() {
-            Type::Def(DefId::Struct(struct_id)) => {
-                let data = db.struct_data(*struct_id);
-                vec![DefinitionTarget::Range(
-                    DefId::Struct(*struct_id).file_id().0,
-                    data.fields[field_id].range,
-                )]
-            }
-            _ => Vec::new(),
+        Resolution::Field(field) => {
+            let Some((DefId::Struct(struct_id), field_id)) = field.struct_field() else {
+                return Vec::new();
+            };
+            let data = db.struct_data(struct_id);
+            vec![DefinitionTarget::Range(
+                DefId::Struct(struct_id).file_id().0,
+                data.fields[field_id].range,
+            )]
         },
         Resolution::Variant(enum_id, variant_id) => {
             let data = db.enum_data(enum_id);
@@ -290,10 +302,7 @@ fn resolution_targets(db: &SalsaDb, resolution: Resolution) -> Vec<DefinitionTar
             .copied()
             .map(|base| vec![DefinitionTarget::Def(base)])
             .unwrap_or_default(),
-        Resolution::Local(_)
-        | Resolution::Builtin(_)
-        | Resolution::BuiltinField(_)
-        | Resolution::BuiltinFn(_) => Vec::new(),
+        Resolution::Builtin(_) => Vec::new(),
     }
 }
 
@@ -307,6 +316,7 @@ fn locations_for_target(db: &SalsaDb, target: DefinitionTarget) -> Option<LspLoc
             location_for_range(db, file, NodeRange::from(&node.node()))
         }
         DefinitionTarget::Range(file, range) => location_for_range(db, file, range),
+        DefinitionTarget::File(file) => location_for_range(db, file, NodeRange { start: 0, end: 0 }),
     }
 }
 

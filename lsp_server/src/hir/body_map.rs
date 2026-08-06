@@ -372,21 +372,17 @@ impl ExprBuilder for BodyBuilder {
         expr_id
     }
 
-    fn alloc_member_expr(&mut self, member: Expr, range: NodeRange, node: Node) -> ExprId {
+    fn alloc_member_expr(&mut self, member: Expr, node: Node, prop: NodeRange) -> ExprId {
         let mem_id = self.alloc_expr(member, node);
-        self.expr_store.range_to_semantic.insert(range, SemanticId::Expr(mem_id));
+        self.expr_store.range_to_semantic.insert(prop, SemanticId::Expr(mem_id));
         mem_id
     }
 
-    fn alloc_call_expr(&mut self, call: Expr, callee_node: Node, node: Node) -> ExprId {
+    fn alloc_call_expr(&mut self, call: Expr, node: Node, ident: Option<NodeRange>) -> ExprId {
         let call_id = self.alloc_expr(call, node);
-        let callee_range = NodeRange::from(&callee_node);
-        self.expr_store.range_to_semantic.insert(callee_range, SemanticId::Expr(call_id));
-        if callee_node.kind_id() == NodeKind::MEMBER_EXPRESSION {
-            if let Some(prop) = callee_node.child_by_field_id(FieldKind::PROPERTY.into()) {
-                self.expr_store.range_to_semantic.insert(NodeRange::from(&prop), SemanticId::Expr(call_id));
-            }
-        }
+        if let Some(ident) = ident {
+             self.expr_store.range_to_semantic.insert(ident, SemanticId::Expr(call_id));
+        };
         call_id
     }
 }

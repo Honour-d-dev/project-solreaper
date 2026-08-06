@@ -86,6 +86,41 @@ impl LiteralType {
         }
     }
 
+    pub fn inferred_type(&self) -> Option<Type> {
+        match self {
+            Self::Boolean(_) => Some(Type::Primitive(Primitive::Boolean)),
+            Self::Integer(value) => Self::smallest_integer_type(value),
+            Self::Rational { numerator, denominator }
+                if !denominator.eq(&BigInt::from(0u8)) && numerator % denominator == BigInt::from(0u8) =>
+            {
+                Self::smallest_integer_type(&(numerator / denominator))
+            }
+            Self::Rational { .. } => None,
+            Self::String(_) => Some(Type::Primitive(Primitive::String)),
+            Self::HexString(text) => {
+                let len = Self::byte_len(text, true);
+                (len > 0 && len <= 32)
+                    .then(|| Type::Primitive(Primitive::FixedBytes(len as u8)))
+                    .or_else(|| Some(Type::Primitive(Primitive::Bytes)))
+            }
+        }
+    }
+
+    fn smallest_integer_type(value: &BigInt) -> Option<Type> {
+        let primitive = if value.sign() == Sign::Minus {
+            (8..=256)
+                .step_by(8)
+                .map(Primitive::Int)
+                .find(|ty| Self::fits_signed(value, match ty { Primitive::Int(bits) => *bits, _ => unreachable!() }))
+        } else {
+            (8..=256)
+                .step_by(8)
+                .map(Primitive::Uint)
+                .find(|ty| Self::fits_unsigned(value, match ty { Primitive::Uint(bits) => *bits, _ => unreachable!() }))
+        }?;
+        Some(Type::Primitive(primitive))
+    }
+
     fn display(&self) -> String {
         match self {
             Self::Boolean(value) => value.to_string(),

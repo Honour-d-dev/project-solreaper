@@ -13,22 +13,106 @@ use crate::hir::types::{Fn, Path, Primitive, Type, TypeId, TypeKey, TypeName};
 use crate::salsa::{File, HirDatabase, SalsaDb};
 use crate::salsa::hir_db::collect_using;
 use crate::salsa::interned_db::Id as InternedId;
+use crate::utilities::log_info;
+
+
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum CallableOrigin {
+    Def(DefId),
+    Builtin(BuiltinFn)
+
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Callable {
+    def: CallableOrigin,
+    bound_args: u8
+}
+
+
+impl Callable {
+    pub fn new_def(def: DefId, bound: u8) -> Callable {
+        Callable { def: CallableOrigin::Def(def), bound_args: bound }
+    }
+
+    pub fn new_builtin(builtin: BuiltinFn, bound: u8) -> Callable {
+        Callable { def: CallableOrigin::Builtin(builtin), bound_args: bound }
+    }
+
+    pub fn def(&self) -> Option<DefId> {
+        match &self.def {
+            CallableOrigin::Def(def) => Some(*def),
+            CallableOrigin::Builtin(_) => None
+        }
+    }
+
+    pub fn builtin(&self) -> Option<BuiltinFn> {
+        match &self.def {
+            CallableOrigin::Builtin(b) => Some(b.clone()),
+            CallableOrigin::Def(_) => None
+        }
+    }
+
+    pub fn bound(&self) -> u8 {
+        self.bound_args
+    }
+}
+
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum FieldOrigin {
+    Struct(DefId, FieldId),
+    Builtin(BuiltinField)
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Field {
+    origin: FieldOrigin,
+    ty: TypeKey
+}
+
+impl Field {
+    pub fn builtin_field(b: BuiltinField) -> Field {
+        Field {
+            ty: TypeKey(Type::Primitive(b.ty), b.loc),
+            origin: FieldOrigin::Builtin(b),
+        }
+    }
+
+    pub fn ty(&self) -> &TypeKey {
+        &self.ty
+    }
+
+    pub fn struct_field(&self) -> Option<(DefId, FieldId)> {
+        match &self.origin {
+            FieldOrigin::Struct(owner, field) => Some((*owner, *field)),
+            FieldOrigin::Builtin(_) => None,
+        }
+    }
+
+    pub fn builtin(&self) -> Option<BuiltinField> {
+        match &self.origin {
+            FieldOrigin::Builtin(field) => Some(field.clone()),
+            FieldOrigin::Struct(_, _) => None,
+        }
+    }
+}
 
 
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Resolution {
+    File(File),
     Local(LocalId),
-    Def(DefId),
-    TypeKey(TypeKey),
-    /// A standalone type reference with no data location (using directives, metatype casts, type names).
+    Var(DefId),
+    Callable(Callable),
+    Callables(Box<[Callable]>),
     Type(Type),
-    Defs(Box<[DefId]>),
+    TypeKey(TypeKey),
     Variant(EnumId, VariantId),
-    Field(TypeKey, FieldId),
+    Field(Field),
     Builtin(BuiltinId),
-    BuiltinField(BuiltinField),
-    BuiltinFn(BuiltinFn),
     MetaType(Type),
     Super(DefId),
 }
@@ -129,12 +213,21 @@ impl<'db> Resolver<'db> {
     fn resolution(&self, def: &ScopeData) -> Resolution {
         match def.namespace {
             Namespace::Type => Resolution::Type(Type::Def(def.defs[0])),
-            _ => {
+            Namespace::Variable => Resolution::Var(def.defs[0]),
+            Namespace::Error | Namespace::Event | Namespace::Function => {
                 match def.defs.len() {
-                    1 => Resolution::Def(def.defs[0]),
-                    _ => Resolution::Defs(def.defs.clone().into_boxed_slice())
+                    1 => Resolution::Callable(Callable::new_def(def.defs[0], 0)),
+                    _ => Resolution::Callables(def.defs.iter().map(|d| Callable::new_def(*d, 0)).collect())
                 }
             }
+        }
+    }
+
+    #[inline]
+    fn builtin_resolution(&self, m: BuiltinMember) -> Resolution {
+        match m {
+            BuiltinMember::Field(b) => Resolution::Field(Field::builtin_field(b)),
+            BuiltinMember::Fn(f) => Resolution::Callable(Callable::new_builtin(f, 0)),
         }
     }
 
@@ -286,15 +379,16 @@ impl<'db> Resolver<'db> {
                             let struct_data = self.db.struct_data(*s);
                             struct_data.fields.iter()
                                 .find(|(_, f)| f.name == *name)
-                                .map(|(id, _)| Resolution::Field(typekey.clone(), id))
+                                .and_then(|(id, _)| self.field_typekey(typekey, id).map(|ty| {
+                                    Resolution::Field(Field {
+                                        origin: FieldOrigin::Struct(DefId::Struct(*s), id),
+                                        ty,
+                                    })
+                                }))
                         }
                         DefId::Udvt(u) => {
                             let data = self.db.udvt_data(*u);
-                            let Some(m) = BuiltinDB::lookup_in_udvt(*def, data.name.clone(), data.underlying, name.as_str()) else { return None; };
-                            match m {
-                                BuiltinMember::Field(b) => Some(Resolution::BuiltinField(b)),
-                                BuiltinMember::Fn(f) => Some(Resolution::BuiltinFn(f)),
-                            }
+                            BuiltinDB::lookup_in_udvt(*def, data.name.clone(), data.underlying, name.as_str()).map(|m| self.builtin_resolution(m))
                         }
                         id @ (DefId::Contract(_) | DefId::Interface(_)) => {
                             self.lookup_in_bases(*id, name)
@@ -307,11 +401,7 @@ impl<'db> Resolver<'db> {
                 }
             }
             Type::Primitive(_) | Type::Array { .. } | Type::Fn(_) => {
-                let Some(m) = BuiltinDB::lookup_in_type(typekey.typ(), name) else { return None; };
-                match m {
-                    BuiltinMember::Field(b) => Some(Resolution::BuiltinField(b)),
-                    BuiltinMember::Fn(f) => Some(Resolution::BuiltinFn(f)),
-                }
+                BuiltinDB::lookup_in_type(typekey.typ(), name).map(|m| self.builtin_resolution(m))
             }
             Type::Mapping{..} => None,
             Type::Tuple(_) | Type::Literal(_) => None,
@@ -333,35 +423,40 @@ impl<'db> Resolver<'db> {
         };
         match defs.len() {
             0 => None,
-            1 => Some(Resolution::Def(defs[0])),
-            _ => Some(Resolution::Defs(defs.iter().copied().collect())),
+            1 => Some(Resolution::Callable(Callable::new_def(defs[0], 1))),
+            _ => Some(Resolution::Callables(defs.iter().map(|d| Callable::new_def(*d, 1)).collect())),
         }
+    }
+
+    fn field_typekey(&self, parent: &TypeKey, field_id: FieldId) -> Option<TypeKey> {
+        let Type::Def(DefId::Struct(struct_id)) = parent.typ() else { return None; };
+        let data = self.db.struct_data(*struct_id);
+        let field = &data.fields[field_id];
+        let ty = self.lower_type_name(field.type_name, &data.expr_store)?;
+        let default_loc = ty.clone().upcast().loc();
+        let loc = match (parent.loc(), default_loc) {
+            (Location::Storage, Location::Memory) => Location::Storage,
+            (_, loc) => loc,
+        };
+        Some(TypeKey(ty, loc))
     }
 
     /// Member lookup — threads the parent's location to child resolutions.
     pub fn lookup_in_resolution(&self, res: Resolution, name: &Name) -> Option<Resolution> {
         match res {
             Resolution::Builtin(id) => {
-                let Some(m) = BuiltinDB::lookup_in_global(id, name) else { return None; };
-                match m {
-                    BuiltinMember::Field(b) => Some(Resolution::BuiltinField(b)),
-                    BuiltinMember::Fn(f) => Some(Resolution::BuiltinFn(f)),
-                }
+                BuiltinDB::lookup_in_global(id, name).map(|m| self.builtin_resolution(m))
             }
             Resolution::MetaType(ty) => {
-                let Some(m) = BuiltinDB::lookup_in_meta(&ty, name) else { return None; };
-                match m {
-                    BuiltinMember::Field(b) => Some(Resolution::BuiltinField(b)),
-                    BuiltinMember::Fn(f) => Some(Resolution::BuiltinFn(f)),
-                }
+                BuiltinDB::lookup_in_meta(&ty, name).map(|m| self.builtin_resolution(m))
             }
-            Resolution::Def(d) => {
-                let tk = self.infer_type(Resolution::Def(d))?;
+            Resolution::Var(_) => {
+                let tk = self.infer_type(res)?;
                 self.lookup_in_type(&tk, name,)
                     .or_else(|| self.lookup_using(&tk, name))
             }
-            Resolution::Local(l) => {
-                let tk = self.infer_type(Resolution::Local(l))?;
+            Resolution::Local(_) => {
+                let tk = self.infer_type(res)?;
                 self.lookup_in_type(&tk, name)
                     .or_else(|| self.lookup_using(&tk, name))
             }
@@ -372,26 +467,20 @@ impl<'db> Resolver<'db> {
             Resolution::Type(ty) => {
                 self.lookup_in_type(&ty.upcast(), name)
             }
-            Resolution::Field(tk, f) => {
-                let field_tk = self.infer_type(Resolution::Field(tk, f))?;
-                self.lookup_in_type(&field_tk, name)
-                    .or_else(|| self.lookup_using(&field_tk, name))
+            Resolution::Field(field) => {
+                self.lookup_in_type(field.ty(), name)
+                    .or_else(|| self.lookup_using(field.ty(), name))
             }
-            Resolution::Variant(e, v) => {
-                let tk = self.infer_type(Resolution::Variant(e, v))?;
+            Resolution::Variant(_,_) => {
+                let tk = self.infer_type(res)?;
                 self.lookup_in_type(&tk, name)
                     .or_else(|| self.lookup_using(&tk, name))//cant have using on variant??
-            }
-            Resolution::BuiltinField(bf) => {
-                let tk = TypeKey(Type::Primitive(bf.ty), bf.loc);
-                self.lookup_in_type(&tk, name)
-                    .or_else(|| self.lookup_using(&tk, name))
             }
             Resolution::Super(id) => {
                 self.lookup_in_bases(id, name)
             }
-            Resolution::BuiltinFn(_) => None,
-            Resolution::Defs(_) => None,
+            // These resolutions can't have lookups
+            Resolution::Callable(_) | Resolution::Callables(_) | Resolution::File(_) => None,
         }
     }
 
@@ -506,6 +595,7 @@ impl<'db> Resolver<'db> {
     pub fn resolve_expr(&self, expr: ExprId, store: &ExprStore, sourcemap: Option<&BodySourceMap>) -> Option<Resolution> {
         match &store.exprs[expr] {
             Expr::Ident(name) => {
+                log_info(format!("Resolving Identifier {} ", name.clone()));
                 let scope = sourcemap.and_then(|sm| sm.expr_scopes.get(expr).copied());
                 let offset = sourcemap.and_then(|sm| sm.expr_to_node.get(expr).map(|r| r.start)).unwrap_or_default();
                 let res = self.resolve_name(name, scope, offset)?;
@@ -534,6 +624,7 @@ impl<'db> Resolver<'db> {
                 }
             }
             Expr::Member { obj, prop } => {
+                log_info("Resolving member expr");
                 let res = self.resolve_expr(*obj, store, sourcemap)?;
                 self.lookup_in_resolution(res, prop)
             },
@@ -545,47 +636,39 @@ impl<'db> Resolver<'db> {
                 }
             }
             Expr::Call { callee, args } => {
-                let res = self.resolve_expr(*callee, store, sourcemap)?;
-                match res {
+                log_info("Resolving a call expr");
+                let callee_res = self.resolve_expr(*callee, store, sourcemap)?;
+                let arg_types: Vec<TypeKey> = args.iter()
+                    .filter_map(|a| self.infer_expr(*a, store, sourcemap))
+                    .collect();
+                if arg_types.len() != args.len() { return None;}
+
+                match callee_res {
                     Resolution::Type(ty) => { 
                         //TypeCast branch, we upcast to typekey
                         // When we start diagnostics this is where to validate cast/contruction args
                         Some(Resolution::TypeKey(ty.upcast()))
                     }
-                    _ => {
-                        let arg_types: Vec<TypeKey> = args.iter()
-                            .filter_map(|a| self.infer_expr(*a, store, sourcemap))
-                            .collect();
-                        if arg_types.len() != args.len() {
+                    Resolution::Callable(c) => {
+                        let param_types = self.param_types(&c);
+                        log_info(format!("fn has {} params and call site has {} args", param_types.len(), arg_types.len()));
+                        if param_types.len() != (arg_types.len() + c.bound() as usize) {
                             return None;
                         }
-                        match res {
-                            Resolution::Def(def) => {
-                                match Namespace::from(&def) {//FIXME type namespace cannt fall here, no need to check
-                                    Namespace::Function | Namespace::Error | Namespace::Event => {
-                                        let param_types = self.param_types(def);
-                                        if param_types.len() != arg_types.len() {
-                                            return None;
-                                        }
-                                        if arg_types.iter().zip(param_types.iter()).all(|(a, p)| a.converts_to(p).is_some()) {
-                                            Some(Resolution::Def(def))
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => Some(res),
-                                }
-                            }
-                            Resolution::Defs(candidates) => {
-                                let def = self.resolve_overload(&candidates[..], &arg_types)?;
-                                Some(Resolution::Def(def))
-                            }
-                            _ => Some(res),//typecasts fall through, no arg validation needed
+                        if arg_types.iter().zip(param_types.iter().skip(c.bound().into())).all(|(a, p)| a.converts_to(p).is_some()) {
+                            Some(Resolution::Callable(c))
+                        } else {
+                            None
                         }
                     }
+                    Resolution::Callables(cs) => {
+                        let c = self.resolve_overload(&cs[..], &arg_types)?;
+                        Some(Resolution::Callable(c))
+                    },
+                    _ => None
                 }
             }
-            Expr::Path(_) => None,
+            Expr::Path(p) =>  Some(Resolution::File(self.db.resolve_to_file(self.file, p)?)),
         }
     }
 
@@ -595,53 +678,59 @@ impl<'db> Resolver<'db> {
             .collect()
     }
 
-    pub fn param_types(&self, def: DefId) -> Vec<TypeKey> {
-        match def {
-            DefId::Function(id) => {
-                let data = self.db.function_data(id);
-                self.lower_param_types(&data.parameters, &data.expr_store)
-                    .into_iter()
-                    .zip(data.parameters.iter().map(|(_, l)| l.location()))
-                    .map(|(ty, loc)| TypeKey(ty, loc))
-                    .collect()
+    pub fn param_types(&self, c: &Callable) -> Vec<TypeKey> {
+        match &c.def {
+            CallableOrigin::Def(def) => match def {
+                DefId::Function(id) => {
+                    let data = self.db.function_data(*id);
+                    self.lower_param_types(&data.parameters, &data.expr_store)
+                        .into_iter()
+                        .zip(data.parameters.iter().map(|(_, l)| l.location()))
+                        .map(|(ty, loc)| TypeKey(ty, loc))
+                        .collect()
+                }
+                DefId::Event(id) => {
+                    let data = self.db.event_data(*id);
+                    self.lower_param_types(&data.parameters, &data.expr_store)
+                        .into_iter()
+                        .zip(data.parameters.iter().map(|(_, l)| l.location()))
+                        .map(|(ty, loc)| TypeKey(ty, loc))
+                        .collect()
+                }
+                DefId::Error(id) => {
+                    let data = self.db.error_data(*id);
+                    self.lower_param_types(&data.parameters, &data.expr_store)
+                        .into_iter()
+                        .zip(data.parameters.iter().map(|(_, l)| l.location()))
+                        .map(|(ty, loc)| TypeKey(ty, loc))
+                        .collect()
+                }
+                DefId::Modifier(id) => {
+                    let data = self.db.modifier_data(*id);
+                    self.lower_param_types(&data.parameters, &data.expr_store)
+                        .into_iter()
+                        .zip(data.parameters.iter().map(|(_, l)| l.location()))
+                        .map(|(ty, loc)| TypeKey(ty, loc))
+                        .collect()
+                }
+                _ => Vec::new(),
             }
-            DefId::Event(id) => {
-                let data = self.db.event_data(id);
-                self.lower_param_types(&data.parameters, &data.expr_store)
-                    .into_iter()
-                    .zip(data.parameters.iter().map(|(_, l)| l.location()))
-                    .map(|(ty, loc)| TypeKey(ty, loc))
-                    .collect()
+            CallableOrigin::Builtin(b) => {
+                b.params.iter().map(|ty| ty.clone().upcast()).collect()
             }
-            DefId::Error(id) => {
-                let data = self.db.error_data(id);
-                self.lower_param_types(&data.parameters, &data.expr_store)
-                    .into_iter()
-                    .zip(data.parameters.iter().map(|(_, l)| l.location()))
-                    .map(|(ty, loc)| TypeKey(ty, loc))
-                    .collect()
-            }
-            DefId::Modifier(id) => {
-                let data = self.db.modifier_data(id);
-                self.lower_param_types(&data.parameters, &data.expr_store)
-                    .into_iter()
-                    .zip(data.parameters.iter().map(|(_, l)| l.location()))
-                    .map(|(ty, loc)| TypeKey(ty, loc))
-                    .collect()
-            }
-            _ => Vec::new(),
         }
     }
 
-    pub fn resolve_overload(&self, candidates: &[DefId], arg_types: &[TypeKey]) -> Option<DefId> {
-        let mut best: Option<(DefId, u32)> = None;
-        'candidates: for def in candidates {
-            let param_types = self.param_types(*def);
-            if param_types.len() != arg_types.len() {
+    pub fn resolve_overload(&self, candidates: &[Callable], arg_types: &[TypeKey]) -> Option<Callable> {
+        let mut best: Option<(&Callable, u32)> = None;
+        'candidates: for c in candidates {
+            let param_types = self.param_types(c);
+            let bound = c.bound() as usize;
+            if param_types.len() != arg_types.len() + bound {
                 continue;
             }
             let mut total_cost: u32 = 0;
-            for (arg, param) in arg_types.iter().zip(param_types.iter()) {
+            for (arg, param) in arg_types.iter().zip(param_types.iter().skip(bound)) {
                 match arg.converts_to(param) {
                     Some(cost) => total_cost += cost as u32,
                     None => { continue 'candidates; }
@@ -649,10 +738,10 @@ impl<'db> Resolver<'db> {
             }
             match best {
                 Some((_, prev_cost)) if total_cost >= prev_cost => {}
-                _ => best = Some((*def, total_cost)),
+                _ => best = Some((c, total_cost)),
             }//make this more robust, candidates with equal costs are returned in the error branch
         }
-        best.map(|(def, _)| def)
+        best.map(|(c, _)| c.clone())
     }
 
     pub fn infer_type(&self, res: Resolution) -> Option<TypeKey> {
@@ -662,51 +751,47 @@ impl<'db> Resolver<'db> {
                 let local = &body.locals[l];
                 self.lower_type_name(*local.type_name(), &body.expr_store).map(|ty| TypeKey(ty, local.location()))
             }
-            Resolution::Def(d) => {
-                match Namespace::from(&d) {
-                    Namespace::Variable => {
-                        let DefId::Var(id) = d else { return None; };
-                        let var = self.db.var_data(id);
-                        self.lower_type_name(var.type_name, &var.expr_store).map(|ty| ty.upcast_with_kind(var.kind))
+            Resolution::Var(d) => {
+                let DefId::Var(id) = d else { return None; };
+                let var = self.db.var_data(id);
+                self.lower_type_name(var.type_name, &var.expr_store).map(|ty| ty.upcast_with_kind(var.kind))
+            }
+            Resolution::Callable(c) => {
+                if let Some(def) = c.def() {
+                    let DefId::Function(id) = def else { return None; };
+                    let fn_data = self.db.function_data(id);
+                    let returns = fn_data.return_parameters.iter()
+                        .filter_map(|(_, local)| {
+                            self.lower_type_name(*local.type_name(), &fn_data.expr_store)
+                                .map(|ty| (ty, local.location()))
+                        })
+                        .collect::<Vec<_>>();
+                    match returns.as_slice() {
+                        [] => None,
+                        [(ty, loc)] => Some(TypeKey(ty.clone(), *loc)),
+                        _ => Some(TypeKey(
+                            Type::Tuple(returns.iter().map(|(ty, _)| ty.clone()).collect()),
+                            Location::Stack,
+                        )),
                     }
-                    Namespace::Function => {
-                        let DefId::Function(id) = d else { return None; };
-                        let fn_data = self.db.function_data(id);
-                        let ret_types = self.lower_param_types(&fn_data.return_parameters, &fn_data.expr_store);
-                        let ret_locs: Vec<Location> = fn_data.return_parameters.iter().map(|(_, l)| l.location()).collect();
-                        match ret_types.len() {
-                            0 => None,
-                            1 => Some(TypeKey(ret_types.into_iter().next().unwrap(), ret_locs[0])),
-                            _ => Some(TypeKey(Type::Tuple(ret_types.into_boxed_slice()), Location::Stack)),
-                        }
-                    }
-                    Namespace::Error | Namespace::Event => None,
-                    _ => None,
+                } else {
+                    c.builtin().and_then(|builtin| builtin.return_type.map(|ty| {
+                        let loc = match &ty {
+                            Type::Primitive(p) => p.default_loc(),
+                            _ => Location::Memory,
+                        };
+                        TypeKey(ty, loc)
+                    }))
                 }
             }
             Resolution::TypeKey(tk) => Some(tk),
-            Resolution::Type(_) => None,
-            Resolution::Defs(_) => None,// TODO: use Tuple
+            Resolution::Type(ty) => Some(ty.upcast()),
+            Resolution::Callables(_) => None, // Callables are resolved before type inference
             Resolution::Variant(enum_id, _) => {
                 Some(TypeKey(Type::Def(DefId::Enum(enum_id)), Location::Stack))
             }
-            Resolution::Field(tk, field_id) => {
-                let Type::Def(DefId::Struct(struct_id)) = tk.typ() else { return None; };
-                let struct_data = self.db.struct_data(*struct_id);
-                let field = &struct_data.fields[field_id];
-                self.lower_type_name(field.type_name, &struct_data.expr_store).map(|ty| TypeKey(ty, tk.loc()))
-            }
-            Resolution::BuiltinField(builtin_field) => Some(TypeKey(Type::Primitive(builtin_field.ty), builtin_field.loc)),
-            Resolution::BuiltinFn(builtin_fn) => builtin_fn.return_type.map(|ty| {
-                let loc = match &ty {
-                    Type::Primitive(p) => p.default_loc(),
-                    _ => Location::Memory,
-                };
-                TypeKey(ty, loc)
-            }),
-            Resolution::Super(_) => None,
-            Resolution::Builtin(_) => None,
-            Resolution::MetaType(_) => None,
+            Resolution::Field(field) => Some(field.ty().clone()),
+            Resolution::Super(_) | Resolution::Builtin(_) | Resolution::MetaType(_) | Resolution::File(_) => None,
         }
     }
 
@@ -787,7 +872,7 @@ impl<'db> Resolver<'db> {
 
     fn eval_constant(&self, res: Resolution) -> Option<usize> {
         match res {
-            Resolution::Def(DefId::Var(var_id)) => {
+            Resolution::Var(DefId::Var(var_id)) => {
                 let var_data = self.db.var_data(var_id);
                 if var_data.kind != VariableKind::Const {
                     return None;
@@ -797,26 +882,6 @@ impl<'db> Resolver<'db> {
             }//@TODO add builtin field resolution suport. builtinfields should have a value param. uint[type(uint8).max] is valid but max does not currently hold values
             _ => None,
         }
-    }
-
-}
-
-
-pub struct Inference<'db> {
-    db: &'db dyn HirDatabase,
-    resolver: Resolver<'db>,
-    arg_str: String,
-}
-
-impl<'db> Inference<'db> {
-    pub fn new(db: &'db dyn HirDatabase, ctx: Context) -> Self {
-        let resolver = Resolver::build(db, &ctx);
-        Self { db, resolver, arg_str: String::new() }
-    }
-
-    
-    fn as_string(ty_id: TypeId, types: &Arena<TypeName>) -> String {
-        types[ty_id].to_string(types)
     }
 
 }

@@ -183,9 +183,19 @@ impl Literal {
 pub trait  ExprBuilder {
     fn root(&self) -> &AstNode;
     fn alloc_expr(&mut self, expr: Expr, node: Node) -> ExprId;
-    fn alloc_member_expr(&mut self, expr: Expr, range: NodeRange, node: Node) -> ExprId;
-    fn alloc_call_expr(&mut self, call: Expr, callee_node: Node, node: Node) -> ExprId;
+    fn alloc_member_expr(&mut self, expr: Expr, node: Node, prop: NodeRange ) -> ExprId;
+    fn alloc_call_expr(&mut self, call: Expr, node: Node, ident: Option<NodeRange>) -> ExprId;
 
+    fn call_identifier(&self, node: Node) -> Option<NodeRange> {
+        match node.kind_id().into() {
+            NodeKind::IDENTIFIER => Some(NodeRange::from(&node)),
+            NodeKind::TYPE => Some(NodeRange::from(&node)),
+            NodeKind::PRIMITIVE_TYPE => Some(NodeRange::from(&node)),
+            NodeKind::MEMBER_EXPRESSION => node.child_by_field_id(FieldKind::PROPERTY.into()).map(|prop| NodeRange::from(&prop)),
+            NodeKind::EXPRESSION => self.call_identifier(node.named_child(0)?),
+            _ => None
+        }
+    }
 
     fn lower_expr(&mut self, node: Node) -> Option<ExprId> {
         match node.kind_id().into() {
@@ -215,23 +225,25 @@ pub trait  ExprBuilder {
             NodeKind::META_TYPE_EXPRESSION => {
                 let type_node = node.child(0)?;//type is an unnamed node
                 let ty = self.lower_expr(node.named_child(0)?)?;
-
+                
+                let ident = self.call_identifier(type_node);
                 let expr = Expr::MetaType(ty);
                 // still alloc as call because of shape
-                Some(self.alloc_call_expr(expr, type_node, node))
+                Some(self.alloc_call_expr(expr, node, ident))
             }
             NodeKind::MEMBER_EXPRESSION => {
                 let obj = node.child_by_field_id(FieldKind::OBJECT.into()).and_then(|obj| self.lower_expr(obj))?;
                 
-                let (name, range) = node.child_by_field_id(FieldKind::PROPERTY.into()).map(|prop| (self.root().text_by_range(prop.byte_range()), NodeRange::from(&prop)))?;
+                let (name, prop) = node.child_by_field_id(FieldKind::PROPERTY.into()).map(|prop| (self.root().text_by_range(prop.byte_range()), NodeRange::from(&prop)))?;
 
-                Some(self.alloc_member_expr(Expr::Member { obj, prop: name.into() }, range, node))
+                Some(self.alloc_member_expr(Expr::Member { obj, prop: name.into() }, node, prop))
                 
             }
             NodeKind::CALL_EXPRESSION => {
                 let callee_node = node.child_by_field_id(FieldKind::FUNCTION.into())?;
                 let callee = self.lower_expr(callee_node)?;
 
+                let ident = self.call_identifier(callee_node);
                 let args = node.named_children(&mut node.walk()).filter_map(|n| {
                     if n.kind_id() == NodeKind::CALL_ARGUMENT {
                         self.lower_expr(n)
@@ -244,7 +256,9 @@ pub trait  ExprBuilder {
                     callee,
                     args,
                 };
-                Some(self.alloc_call_expr(call_expr, callee_node, node))
+                
+
+                Some(self.alloc_call_expr(call_expr, node, ident))
             }
             NodeKind::BINARY_EXPRESSION => {
                 let left = node.named_child(0).and_then(|n| self.lower_expr(n));
@@ -271,6 +285,7 @@ pub trait  ExprBuilder {
                 let callee_node = node.child_by_field_id(FieldKind::NAME.into())?;
                 let callee = self.lower_expr(callee_node)?;
 
+                let ident = self.call_identifier(callee_node);
                 let args = node.named_children(&mut node.walk()).filter_map(|n| {
                     if n.kind_id() == NodeKind::CALL_ARGUMENT {
                         self.lower_expr(n)
@@ -283,7 +298,7 @@ pub trait  ExprBuilder {
                     callee,
                     args,
                 };
-                Some(self.alloc_call_expr(call_expr, callee_node, node))
+                Some(self.alloc_call_expr(call_expr, node, ident))
                 
             }
             NodeKind::REVERT_STATEMENT => {
@@ -291,7 +306,8 @@ pub trait  ExprBuilder {
                 let callee = self.lower_expr(callee_node)?;
 
                 let args_node = node.named_children(&mut node.walk()).find(|n| n.kind_id() == NodeKind::REVERT_ARGUMENTS)?;
-
+                
+                let ident = self.call_identifier(callee_node);
                 let args = args_node.named_children(&mut args_node.walk()).filter_map(|n| {
                     if n.kind_id() == NodeKind::CALL_ARGUMENT {
                         self.lower_expr(n)
@@ -304,12 +320,13 @@ pub trait  ExprBuilder {
                     callee,
                     args,
                 };
-                Some(self.alloc_call_expr(call_expr, callee_node, node))
+                Some(self.alloc_call_expr(call_expr, node, ident))
             }
             NodeKind::MODIFIER_INVOCATION | NodeKind::TYPECAST_EXPRESSION =>  {
                 let name_node = node.named_child(0)?;
                 let callee = self.lower_expr(name_node)?;
 
+                let name = self.call_identifier(name_node);
                 let args = node.named_children(&mut node.walk()).filter_map(|n| {
                     if n.kind_id() == NodeKind::CALL_ARGUMENT {
                         self.lower_expr(n)
@@ -322,7 +339,7 @@ pub trait  ExprBuilder {
                     callee,
                     args,
                 };
-                Some(self.alloc_call_expr(call_expr, name_node, node))
+                Some(self.alloc_call_expr(call_expr, node, name))
             }
             _ => {
                 //intermediate exprs e.g.

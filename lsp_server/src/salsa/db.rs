@@ -172,7 +172,7 @@ impl SalsaDatabase {
     pub fn node_at(&self, file: File, offset: ByteOffset) -> Option<AstNode> {
         assert!(offset > 0);
         let root = self.root(file);
-        let range = NodeRange { start: (offset - 1), end: offset };
+        let range = NodeRange { start: offset, end: offset };
         root.named_child_node(range)
     }
 

@@ -245,8 +245,17 @@ pub fn resolve_using<'db>(db: &'db dyn HirDatabase, using: Using<'db>) -> FxHash
         };
         match res {
             // using sources can only be fns and libs, fns are resolved as defs and libs as types
-            Resolution::Def(def @ DefId::Function(_)) => {
-                collect(def, &mut resolver);
+            Resolution::Callable(callable) => {
+                if let Some(def @ DefId::Function(_)) = callable.def() {
+                    collect(def, &mut resolver);
+                }
+            },
+            Resolution::Callables(callables) => {
+                for callable in callables.iter() {
+                    if let Some(def @ DefId::Function(_)) = callable.def() {
+                        collect(def, &mut resolver);
+                    }
+                }
             },
             Resolution::Type(Type::Def(def @ DefId::Library(_))) => {
                 let defmap = resolver.def_map(&def);
