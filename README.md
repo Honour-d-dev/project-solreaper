@@ -14,7 +14,7 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-000000?style=flat-square&logo=rust" alt="Rust"></a>
   <a href="https://soliditylang.org/"><img src="https://img.shields.io/badge/solidity-363636?style=flat-square&logo=solidity" alt="Solidity"></a>
   <a href="https://tree-sitter.github.io/"><img src="https://img.shields.io/badge/tree--sitter-000000?style=flat-square&logo=tree-sitter" alt="Tree-sitter"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Honour-d-dev/SolReapr?style=flat-square" alt="License"></a>
+  <a href="LICENSE-Apache"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square" alt="License"></a>
   <a href="https://github.com/Honour-d-dev/SolReapr"><img src="https://img.shields.io/github/stars/Honour-d-dev/SolReapr?style=flat-square" alt="Stars"></a>
 </p>
 
