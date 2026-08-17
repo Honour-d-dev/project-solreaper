@@ -64,6 +64,8 @@ pub fn is_supported_node(node: &Node<'_>) -> bool {
         | NodeKind::INTERFACE_DEFINITION
         | NodeKind::LIBRARY_DEFINITION
         | NodeKind::FUNCTION_DEFINITION
+        | NodeKind::CONSTRUCTOR_DEFINITION
+        | NodeKind::FALLBACK_RECEIVE_DEFINITION
         | NodeKind::STRUCT_DEFINITION
         | NodeKind::ENUM_DEFINITION
         | NodeKind::EVENT_DEFINITION
@@ -230,81 +232,81 @@ impl NodePtr {
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImportId {
     pub file: FileId,
     pub id: AstId<ast::Import>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UdvtId {
     pub file: FileId,
     pub id: AstId<ast::Udvt>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UsingId {
     pub file: FileId,
     pub id: AstId<ast::Using>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ContractId {
     pub file: FileId,
     pub id: AstId<ast::Contract>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InterfaceId {
     pub file: FileId,
     pub id: AstId<ast::Interface>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LibraryId {
     pub file: FileId,
     pub id: AstId<ast::Library>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionId {
     pub file: FileId,
     pub id: AstId<ast::Function>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ModifierId {
     pub file: FileId,
     pub id: AstId<ast::Modifier>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StructId {
     pub file: FileId,
     pub id: AstId<ast::Struct>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EventId {
     pub file: FileId,
     pub id: AstId<ast::Event>
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EnumId {
     pub file: FileId,
     pub id: AstId<ast::Enum>
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ErrorId {
     pub file: FileId,
     pub id: AstId<ast::Error>
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VarId {
     pub file: FileId,
     pub id: AstId<ast::Var>

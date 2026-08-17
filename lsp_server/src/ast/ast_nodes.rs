@@ -51,7 +51,12 @@ pub trait HasMembers: ToAstNode {
                         members.push(Item::Using(using));
                     }
                 }
-                NodeKind::FUNCTION_DEFINITION => {
+                NodeKind::USER_DEFINED_TYPE_DEFINITION => {
+                    if let Some(udvt) = Udvt::cast(self.raw().upcast(node)) {
+                        members.push(Item::Udvt(udvt));
+                    }
+                }
+                NodeKind::FUNCTION_DEFINITION | NodeKind::CONSTRUCTOR_DEFINITION | NodeKind::FALLBACK_RECEIVE_DEFINITION => {
                     if let Some(func) = Function::cast(self.raw().upcast(node)) {
                         members.push(Item::Function(func));
                     }
@@ -131,7 +136,7 @@ impl_to_ast_node!(
     Contract, CONTRACT_DEFINITION, HasName, HasBases, HasMembers
     Interface, INTERFACE_DEFINITION, HasName, HasBases, HasMembers
     Library, LIBRARY_DEFINITION, HasName, HasMembers
-    Function, FUNCTION_DEFINITION, HasName
+    Function, FUNCTION_DEFINITION | CONSTRUCTOR_DEFINITION | FALLBACK_RECEIVE_DEFINITION, HasName
     Modifier, MODIFIER_DEFINITION, HasName
     Struct, STRUCT_DEFINITION, HasName
     Enum, ENUM_DEFINITION, HasName
@@ -178,9 +183,34 @@ pub struct Enum {
 }
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FunctionKind {
+    Regular,
+    Constructor,
+    Fallback,
+    Receive,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     raw: AstNode,
+}
+
+impl Function {
+    pub fn kind(&self) -> FunctionKind {
+        match self.raw.node().kind_id().into() {
+            NodeKind::CONSTRUCTOR_DEFINITION => FunctionKind::Constructor,
+            NodeKind::FALLBACK_RECEIVE_DEFINITION => {
+                let text = self.raw.text_by_range(self.raw.node().byte_range());
+                if text.trim_start().starts_with("receive") {
+                    FunctionKind::Receive
+                } else {
+                    FunctionKind::Fallback
+                }
+            }
+            _ => FunctionKind::Regular,
+        }
+    }
 }
 
 
@@ -381,7 +411,7 @@ impl ToAstNode for Item {
             NodeKind::LIBRARY_DEFINITION => Some(Self::Library(Library::cast(node).unwrap())),
             NodeKind::STRUCT_DEFINITION => Some(Self::Struct(Struct::cast(node).unwrap())),
             NodeKind::ENUM_DEFINITION => Some(Self::Enum(Enum::cast(node).unwrap())),
-            NodeKind::FUNCTION_DEFINITION => Some(Self::Function(Function::cast(node).unwrap())),
+            NodeKind::FUNCTION_DEFINITION | NodeKind::CONSTRUCTOR_DEFINITION | NodeKind::FALLBACK_RECEIVE_DEFINITION => Some(Self::Function(Function::cast(node).unwrap())),
             NodeKind::EVENT_DEFINITION => Some(Self::Event(Event::cast(node).unwrap())),
             NodeKind::ERROR_DEFINITION => Some(Self::Error(Error::cast(node).unwrap())),
             NodeKind::MODIFIER_DEFINITION => Some(Self::Modifier(Modifier::cast(node).unwrap())),
@@ -403,6 +433,8 @@ impl ToAstNode for Item {
                 | NodeKind::STRUCT_DEFINITION
                 | NodeKind::ENUM_DEFINITION
                 | NodeKind::FUNCTION_DEFINITION
+                | NodeKind::CONSTRUCTOR_DEFINITION
+                | NodeKind::FALLBACK_RECEIVE_DEFINITION
                 | NodeKind::EVENT_DEFINITION
                 | NodeKind::ERROR_DEFINITION
                 | NodeKind::MODIFIER_DEFINITION

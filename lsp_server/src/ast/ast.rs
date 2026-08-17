@@ -109,7 +109,7 @@ impl AstNode {
         self.node
     }
 
-    fn ast(&self) -> Ast {
+    pub fn ast(&self) -> Ast {
         Ast { inner: (*self.inner).clone() }
     }
 

@@ -145,14 +145,16 @@ pub(crate) fn print_named_tree(cursor: &mut tree_sitter::TreeCursor, source_code
     if !cursor.node().is_named() { return "".to_string(); }
     let indent = "  ".repeat(indentation);//todo for only named nodes
     let kind = cursor.node().kind();
-    let text = &source_code[cursor.node().byte_range()];
-    let text = if text.len() > 100 {
-        text[..100].replace('\n', &format!("\n {indent} "))
-    } else {
-        text.replace('\n', &format!("\n {indent} "))
-    };
 
-    let mut result = format!("\n{indent}{kind}: \"{text}\"");//add field name and id if present so wee see what its about
+
+    let text = &source_code[cursor.node().byte_range()];
+    // dont  print bodies, blocks and statements
+    let mut result = if text.len() > 120 ||kind == "statement" || text.contains("{") {
+        format!("\n{indent}{kind}:")
+    } else {
+        text.replace('\n', &format!("\n {indent} "));
+        format!("\n{indent}{kind}: \"{text}\"")//add field name and id if present so wee see what its about
+    };
 
     iterate_children!(cursor, {
         result.push_str(&print_named_tree(cursor, source_code, indentation + 2));

@@ -5,7 +5,7 @@ use triomphe::Arc;
 use rustc_hash::FxHashMap;
 use smol_str::SmolStr as Name;
 
-use crate::ast::{self, Ast, AstId, AstIdMap, ErasedAstId, ImportType, ToAstNode, HasName, HasMembers};
+use crate::ast::{self, Ast, AstId, AstIdMap, ErasedAstId, FunctionKind, ImportType, ToAstNode, HasName, HasMembers};
 use crate::salsa::{File, RootDatabase};
 
 
@@ -140,6 +140,7 @@ impl Lowerer {
                     let Some(id) = self.ast_id_map.id_of(&f) else {continue;};
                     let function = Function {
                         name: f.name().unwrap_or_default(),
+                        kind: f.kind(),
                     };
                     self.top_level.push(ItemId::Function(id));
                     self.data.insert(id.erase(), Item::Function(function));
@@ -212,10 +213,21 @@ impl Lowerer {
                     result.push(ItemId::Using(id));
                     self.data.insert(id.erase(), Item::Using(using));
                 },
+                ast::Item::Udvt(u) => {
+                    let Some(id) = self.ast_id_map.id_of(&u) else {continue;};
+                    let Some(underlying) = u.underlying() else {continue;};
+                    let udvt = Udvt {
+                        name: u.name(),
+                        underlying,
+                    };
+                    result.push(ItemId::Udvt(id));
+                    self.data.insert(id.erase(), Item::Udvt(udvt));
+                }
                 ast::Item::Function(f) => {
                     let Some(id) = self.ast_id_map.id_of(&f) else {continue;};
                     let function = Function {
                         name: f.name().unwrap_or_default(),
+                        kind: f.kind(),
                     };
                     result.push(ItemId::Function(id));
                     self.data.insert(id.erase(), Item::Function(function));
@@ -368,8 +380,9 @@ pub struct Library {
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
-pub struct Function {//TODO: Add visibility
+pub struct Function {
     pub name: Name,
+    pub kind: FunctionKind,
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]

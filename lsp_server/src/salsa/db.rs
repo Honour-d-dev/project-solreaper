@@ -20,6 +20,27 @@ use crate::utilities::{byte_to_point, to_rope_idx};
 use crate::workspace::{PackageConfig, PackageId, Workspace};
 
 
+#[macro_export]
+macro_rules! map_def_id {
+
+    (//Arm#1
+        match $id_map:expr, $file:expr, $node:expr, $container:expr => {
+            $($node_kind:ident => $kind:ident => $id_kind:ident $(=> $break:ident)?),* $(,)?
+        }
+    ) => {
+        match $node.kind_id().into() {
+            $(NodeKind::$node_kind => {
+                let id = $id_map.id_of_node::<ast::$kind>($node).unwrap();
+                let def_id = $crate::ir::def_map::DefId::$kind($crate::ast::$id_kind{file:$file,id});
+                $container.push(def_id);
+                $($break;)?
+            },)*
+            _ => {}
+        }
+    };
+}
+
+
 pub type FileId = File;
 #[salsa::input]
 #[derive(Debug)]
@@ -32,7 +53,7 @@ pub struct File {
 
 
 ///////////////SOURCEROOT///////////////////
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SourceRootData {
     pub package_id: PackageId,
     pub files: Arc<[FileId]>,
@@ -52,6 +73,7 @@ impl Default for SourceRootData {
 
 pub type SourceRootId = SourceRoot;
 #[salsa::input]
+#[derive(Debug)]
 pub(crate) struct SourceRoot {
     #[returns(ref)]
     pub source_root: Arc<SourceRootData>,
@@ -166,14 +188,19 @@ impl SalsaDatabase {
 
     pub fn node_at_position(&self, path: &Utf8PathBuf, position: lsp_types::Position) -> Option<AstNode> {
         let (file, offset)  = self.convert(path, position);
-        self.node_at(file, offset)
+        self.named_node_at(file, offset)
     }
 
-    pub fn node_at(&self, file: File, offset: ByteOffset) -> Option<AstNode> {
-        assert!(offset > 0);
+    pub fn named_node_at(&self, file: File, offset: ByteOffset) -> Option<AstNode> {
         let root = self.root(file);
         let range = NodeRange { start: offset, end: offset };
         root.named_child_node(range)
+    }
+
+    pub fn node_at(&self, file: File, offset: ByteOffset) -> Option<AstNode> {
+        let root = self.root(file);
+        let range = NodeRange { start: offset, end: offset };
+        root.child_node(range)
     }
 
 
@@ -187,9 +214,9 @@ impl SalsaDatabase {
         let mut path = vec![root_id];
         let mut current = root.node();
         loop {
-            let next = current.child_with_descendant(node).unwrap();
+            let Some(next)  = current.child_with_descendant(node) else { break;};
             if next.id() == node.id() { break; }
-            crate::map_def_id! {
+            map_def_id! {
                 match self.ast_id_map(file), file, next, path => {
                     CONTRACT_DEFINITION => Contract => ContractId,
                     INTERFACE_DEFINITION => Interface => InterfaceId,
@@ -198,6 +225,8 @@ impl SalsaDatabase {
                     USING_DIRECTIVE => Using => UsingId => break,
                     USER_DEFINED_TYPE_DEFINITION => Udvt => UdvtId => break,
                     FUNCTION_DEFINITION => Function => FunctionId => break,
+                    CONSTRUCTOR_DEFINITION => Function => FunctionId => break,
+                    FALLBACK_RECEIVE_DEFINITION => Function => FunctionId => break,
                     MODIFIER_DEFINITION => Modifier => ModifierId => break,
                     STRUCT_DEFINITION => Struct => StructId => break,
                     ENUM_DEFINITION => Enum => EnumId => break,
@@ -256,26 +285,4 @@ impl SalsaDatabase {
             self.parser.lock().apply_tree_edit(file, &edit);
         }
     }
-}
-
-
-
-#[macro_export]
-macro_rules! map_def_id {
-
-    (//Arm#1
-        match $id_map:expr, $file:expr, $node:expr, $container:expr => {
-            $($node_kind:ident => $kind:ident => $id_kind:ident $(=> $break:ident)?),* $(,)?
-        }
-    ) => {
-        match $node.kind_id().into() {
-            $(NodeKind::$node_kind => {
-                let id = $id_map.id_of_node::<ast::$kind>($node).unwrap();
-                let def_id = $crate::ir::def_map::DefId::$kind($crate::ast::$id_kind{file:$file,id});
-                $container.push(def_id);
-                $($break;)?
-            },)*
-            _ => {}
-        }
-    };
 }

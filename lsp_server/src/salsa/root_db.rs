@@ -23,6 +23,7 @@ pub fn package_config(db: &dyn salsa::Database, root: SourceRootId) -> Package {
 
 #[salsa::tracked]
 pub fn parse(db: &dyn RootDatabase, file: File) -> Arc<Ast> {
+    tracing::debug!(?file, "parse: cache miss");
     // !untracked state/data used here to enable incremental reparsing
     // However, the untracked data is kept in sync with salsa by the Incremental parser.
     let tree = db.ts_incremental_parse(file);
@@ -31,17 +32,20 @@ pub fn parse(db: &dyn RootDatabase, file: File) -> Arc<Ast> {
 
 #[salsa::tracked]
 pub fn ast_id_map(db: &dyn RootDatabase, file: File) -> Arc<AstIdMap> {
+    tracing::debug!(?file, "ast_id_map: cache miss");
     let ast = parse(db, file);
     Arc::new(AstIdMap::new(&ast.root()))
 }
 
 #[salsa::tracked(returns(ref))]
 pub fn item_tree(db: &dyn RootDatabase, file: File) -> ItemTree {
+    tracing::debug!(?file, "item_tree: cache miss");
     Lowerer::lower(db, file)
 }
 
 #[salsa::tracked]
 pub fn root_def_map(db: &dyn RootDatabase, root: SourceRootId) -> Arc<DefMap> {
+    tracing::debug!(?root, "root_def_map: cache miss");
     Arc::new(Collector::collect_defmap(db, root))
 }
 

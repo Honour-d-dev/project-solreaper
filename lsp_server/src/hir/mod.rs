@@ -3,4 +3,4 @@ pub mod exprs;
 pub mod types;
 pub mod resolver;
 pub mod item_data;
-mod builtins;
+pub mod builtins;

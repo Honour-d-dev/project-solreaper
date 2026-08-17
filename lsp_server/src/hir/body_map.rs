@@ -69,7 +69,7 @@ impl std::fmt::Display for Location {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BodyOwnerId {
     Function(FunctionId),
     Modifier(ModifierId)
@@ -91,6 +91,10 @@ impl Scope {
 
     pub fn parent(&self) -> Option<ScopeId> {
         self.parent
+    }
+
+    pub fn range(&self) -> NodeRange {
+        self.range
     }
 }
 
@@ -225,9 +229,11 @@ impl BodyBuilder {
         for child in block.named_children(&mut block.walk()) {//Switch to cursor walking
             match child.kind_id().into() {
                 NodeKind::VAR_DECLARATION_STATEMENT => self.collect_declaration(child),
+                // try statements have bare parameters as direct desendants for some reason
+                NodeKind::PARAMETER => self.add_local(child, VariableKind::Parameter, child.start_byte() as u32),
                 NodeKind::STATEMENT | NodeKind::IF_STATEMENT | NodeKind::WHILE_STATEMENT | 
                 NodeKind::DO_WHILE_STATEMENT |NodeKind::RETURN_STATEMENT => self.walk_block(child),
-                NodeKind::BLOCK_STATEMENT | NodeKind::FOR_STATEMENT => {//maybe seperate later so loop var is declared in inner block scope
+                NodeKind::BLOCK_STATEMENT | NodeKind::FOR_STATEMENT | NodeKind::TRY_STATEMENT => {//maybe seperate later so loop var is declared in inner block scope
                     self.push_scope(NodeRange::from(&child));
                     self.walk_block(child);
                     self.pop_scope();
@@ -238,7 +244,10 @@ impl BodyBuilder {
                 NodeKind::EMIT_STATEMENT | NodeKind::REVERT_STATEMENT => {
                     self.lower_expr(child);
                 }
-                _ => {}//TODO try/catch
+                //TODO try/catch
+                _  => { //we need top level/statement level error nodes handling. resolve the exprs inside if any
+                    self.walk_block(child);
+                }
             }
         }
     }

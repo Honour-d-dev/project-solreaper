@@ -19,7 +19,7 @@ use crate::salsa::{FileId, RootDatabase, SourceRootId};
 type Name = SmolStr;
 type ScopeId = Idx<Scope>;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DefId {
     File(FileId),
     Import(ImportId),
@@ -281,6 +281,7 @@ impl<'db, 'collector> FileCollector<'db, 'collector> {
                 ItemId::Error(id) => (DefId::Error(ErrorId { file: self.file, id }), self.item_tree[id].name.clone()),
                 ItemId::Modifier(id) => (DefId::Modifier(ModifierId { file: self.file, id }), self.item_tree[id].name.clone()),
                 ItemId::Var(id) => (DefId::Var(VarId { file: self.file, id }), self.item_tree[id].name.clone()),
+                ItemId::Udvt(id) => (DefId::Udvt(UdvtId { file: self.file, id }), self.item_tree[id].name.clone().unwrap_or_default()),
                 ItemId::Using(id) => {
                     let data = DefData {
                         name: None,
