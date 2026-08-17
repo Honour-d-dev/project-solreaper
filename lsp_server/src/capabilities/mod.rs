@@ -1,5 +1,8 @@
+pub mod completion;
 pub mod definition;
 pub mod hover;
+pub mod view_ast;
+pub mod view_hir;
 
 use la_arena::Arena;
 
