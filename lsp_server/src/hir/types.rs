@@ -144,6 +144,7 @@ pub enum Type {
     Primitive(Primitive),
     Literal(LiteralType),
     Def(DefId),
+    Error,
     Array{ty: Box<Type>, size: Option<usize>},
     Mapping {
         key: Box<Type>,
@@ -157,18 +158,19 @@ impl Type {
     /// Returns the cost of implicitly converting `self` to `target`.
     /// `None` means no implicit conversion is possible.
     /// Cost 0 = identical, higher = more lossy/risky.
-    pub fn converts_to(&self, target: &Type) -> Option<u8> {
+    pub fn converts_to(&self, target: &Type, db: &dyn HirDatabase) -> Option<u8> {
         match (self, target) {
             (Type::Literal(literal), target) => literal.converts_to(target),
             (Type::Primitive(a), Type::Primitive(b)) => a.converts_to(b),
-            (Type::Def(a), Type::Def(b)) if a == b => Some(0),
+            (Type::Def(a), Type::Def(b)) => Self::def_conversion(a, b, db),
+            (Type::Error, Type::Error) => Some(0),
             (Type::Array { ty: a, size: sa }, Type::Array { ty: b, size: sb }) => {
-                let cost = a.converts_to(b)?;
+                let cost = a.converts_to(b, db)?;
                 if sa == sb { Some(cost) } else { None }
             }
             (Type::Mapping { key: ka, value: va }, Type::Mapping { key: kb, value: vb }) => {
-                let kc = ka.converts_to(kb)?;
-                let vc = va.converts_to(vb)?;
+                let kc = ka.converts_to(kb, db)?;
+                let vc = va.converts_to(vb, db)?;
                 Some(kc.saturating_add(vc))
             }
             (Type::Fn(a), Type::Fn(b)) => {
@@ -177,10 +179,10 @@ impl Type {
                 }
                 let mut cost = 0u8;
                 for (ap, bp) in a.params.iter().zip(b.params.iter()) {
-                    cost = cost.saturating_add(ap.converts_to(bp)?);
+                    cost = cost.saturating_add(ap.converts_to(bp, db)?);
                 }
                 for (ar, br) in a.ret.iter().zip(b.ret.iter()) {
-                    cost = cost.saturating_add(ar.converts_to(br)?);
+                    cost = cost.saturating_add(ar.converts_to(br,db)?);
                 }
                 Some(cost)
             }
@@ -190,12 +192,27 @@ impl Type {
                 }
                 let mut cost = 0u8;
                 for (x, y) in a.iter().zip(b.iter()) {
-                    cost = cost.saturating_add(x.converts_to(y)?);
+                    cost = cost.saturating_add(x.converts_to(y,db)?);
                 }
                 Some(cost)
             }
             _ => None,
         }
+    }
+
+    fn def_conversion(a: &DefId, b: &DefId, db: &dyn HirDatabase) -> Option<u8> {
+        (a == b).then_some(0).or_else(|| {
+            match a {
+                DefId::Contract(_) | DefId::Interface(_) => {
+                    db.bases(*a).into_iter().find_map(|base| (base == *b).then_some(0))
+                }
+                _ => None,
+            }
+        })
+    }
+
+    pub fn implicitly_converts(&self, target: &Type, db: &dyn HirDatabase) -> bool {
+        self.converts_to(target, db).is_some_and(|c| c == 0)
     }
 
     pub fn def_id(&self) -> Option<DefId> {
@@ -210,6 +227,7 @@ impl Type {
             Type::Primitive(p) => p.to_string(),
             Type::Literal(literal) => literal.display(),
             Type::Def(def) => Self::def_name(db, *def).unwrap_or_else(|| "<unknown>".into()),
+            Type::Error => "error".into(),
             Type::Array { ty, size: Some(n) } => format!("{}[{n}]", ty.display(db)),
             Type::Array { ty, size: None } => format!("{}[]", ty.display(db)),
             Type::Mapping { key, value } => format!("mapping({} => {})", key.display(db), value.display(db)),
@@ -238,35 +256,46 @@ impl Type {
         }
     }
 
+    /// Cast types to their default locations.
+    /// The locations of dynamic types can be changed upstream based on the location of their parent, if any
     pub fn upcast(self) -> TypeKey {
         let loc = match self {
             Type::Primitive(p) => p.default_loc(),
             Type::Literal(ref literal) => literal.default_loc(),
-            Type::Def(d)  => {
+            Type::Def(d) => {
                 match d {
-                    DefId::Struct(_) => Location::Memory,//struct construction always memory
+                    DefId::Struct(_) => Location::Memory,//struct construction default memory
                     _ => Location::Stack,// contract/interface/library/enum/udvt
                 }
             },
-            Type::Fn(_) => Location::Stack,
-            _ => Location::Memory,
+            Type::Fn(_) | Type::Error => Location::Stack,
+            Type::Mapping { .. } => Location::Storage,//Mapping can only exist in storage
+            Type::Array { .. } => Location::Memory,
+            Type::Tuple(_) => Location::Memory,
         };
         TypeKey(self, loc)
     }
 
-    pub fn upcast_with_kind(self, kind: VariableKind) -> TypeKey {
+    /// Cast types to a specific location.
+    /// All dynamic types inherit the parent location.
+    pub fn upcast_from(self, loc: Location) -> TypeKey {
+        match self.upcast() {
+            tk @ TypeKey(_, Location::Stack) => tk,
+            TypeKey(ty,_ ) => TypeKey(ty, loc) //all dynanic types inherit parent loc
+        }
+    }
+
+    pub fn upcast_from_kind(self, kind: VariableKind) -> TypeKey {
         match kind {
             VariableKind::State => {
-                match self.upcast() {
-                    tk @ TypeKey(_, Location::Stack) => tk,
-                    TypeKey(ty,_ ) => TypeKey(ty, Location::Storage) //all dynanic (memory) types live in storage if state
-                }
+                self.upcast_from(Location::Storage)
             }
             _ => {
                 self.upcast()
             }
         }
     }
+
 }
 
 #[derive(PartialEq, Eq)]
@@ -368,8 +397,8 @@ impl TypeKey {
         self.0.def_id()
     }
 
-    pub fn converts_to(&self, target: &TypeKey) -> Option<u8> {
-        let cost = self.0.converts_to(&target.0)?;
+    pub fn converts_to(&self, target: &TypeKey, db: &dyn HirDatabase) -> Option<u8> {
+        let cost = self.0.converts_to(&target.0, db)?;
         match (self.1, target.1) {
             (a, b) if a == b => Some(cost),
             (Location::Memory, Location::Calldata) => Some(cost),
@@ -439,6 +468,31 @@ impl Primitive {
             Primitive::Bytes | Primitive::String => Location::Memory,
             _ => Location::Stack,
         }
+    }
+
+    /// All primitive types commonly used in Solidity, for completion.
+    /// `Uint`/`Int` cover 8–256 in steps of 8; `FixedBytes` covers 1–32.
+    pub fn all_primitives() -> Vec<Primitive> {
+        let mut acc = vec![
+            Primitive::Boolean,
+            Primitive::Address,
+            Primitive::AddressPayable,
+            Primitive::String,
+            Primitive::Bytes,
+        ];
+        // uint8 .. uint256
+        for size in (8..=256).step_by(8) {
+            acc.push(Primitive::Uint(size));
+        }
+        // int8 .. int256
+        for size in (8..=256).step_by(8) {
+            acc.push(Primitive::Int(size));
+        }
+        // bytes1 .. bytes32
+        for size in 1..=32u8 {
+            acc.push(Primitive::FixedBytes(size));
+        }
+        acc
     }
 
     #[inline]
@@ -717,9 +771,9 @@ mod tests {
 
     #[test]
     fn integer_literals_are_value_sensitive() {
-        let small = Type::Literal(LiteralType::Integer(BigInt::from(255u16)));
-        let large = Type::Literal(LiteralType::Integer(BigInt::from(256u16)));
-        let negative = Type::Literal(LiteralType::Integer(BigInt::from(-1i8)));
+        let small = LiteralType::Integer(BigInt::from(255u16));
+        let large = LiteralType::Integer(BigInt::from(256u16));
+        let negative = LiteralType::Integer(BigInt::from(-1i8));
 
         assert!(small.converts_to(&primitive(Primitive::Uint(8))).is_some());
         assert!(large.converts_to(&primitive(Primitive::Uint(8))).is_none());
@@ -729,14 +783,14 @@ mod tests {
 
     #[test]
     fn rational_literals_only_convert_when_integral() {
-        let integral = Type::Literal(LiteralType::Rational {
+        let integral = LiteralType::Rational {
             numerator: BigInt::from(6u8),
             denominator: BigInt::from(3u8),
-        });
-        let fractional = Type::Literal(LiteralType::Rational {
+        };
+        let fractional = LiteralType::Rational {
             numerator: BigInt::from(3u8),
             denominator: BigInt::from(2u8),
-        });
+        };
 
         assert!(integral.converts_to(&primitive(Primitive::Uint(8))).is_some());
         assert!(fractional.converts_to(&primitive(Primitive::Uint(8))).is_none());
@@ -744,8 +798,8 @@ mod tests {
 
     #[test]
     fn string_literals_have_literal_only_byte_conversions() {
-        let literal = Type::Literal(LiteralType::String("abc".into()));
-        let hex_literal = Type::Literal(LiteralType::HexString(r#"hex"abcd"#.into()));
+        let literal = LiteralType::String("abc".into());
+        let hex_literal = LiteralType::HexString(r#"hex"abcd"#.into());
 
         assert!(literal.converts_to(&primitive(Primitive::String)).is_some());
         assert!(literal.converts_to(&primitive(Primitive::Bytes)).is_some());

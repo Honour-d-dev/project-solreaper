@@ -5,18 +5,54 @@ use la_arena::Arena;
 use lsp_server::{Request, Response};
 use lsp_types::{HoverContents, MarkupContent, MarkupKind, HoverParams};
 
-use crate::ast::{ContractId, EnumId, ErrorId, EventId, FunctionId, InterfaceId, LibraryId, ModifierId, NodeRange, StructId, VarId};
+use crate::ast::{ContractId, EnumId, ErrorId, EventId, FunctionId, FunctionKind, InterfaceId, LibraryId, ModifierId, NodeRange, StructId, VarId};
 use crate::hir::body_map::{BodyOwnerId, BodySourceMap, Local, SemanticId, VariableKind};
+use crate::hir::exprs::{Expr, Literal};
 use crate::hir::item_data::{EnumData, ExprStore, Field, VariantId};
 use crate::hir::resolver::{Callable, Context, Resolution, Resolver};
 use crate::hir::types::{Mutability, Type, TypeName, Visibility};
 use crate::ir::def_map::DefId;
-use crate::salsa::{File, HirDatabase, SalsaDb};
+use crate::salsa::{File, HirDatabase, RootDatabase, SalsaDb};
 use crate::utilities::{log_info, to_utf8path};
 
 use super::SemanticCtx;
 
+fn code_block(code: &str) -> String {
+    format!("```solidity \n\n{code}\n```")
+}
 
+struct HoverInfo {
+    title: String,
+    signature: Option<String>,
+    documentation: Option<String>,
+    definition_link: Option<String>,
+}
+
+impl HoverInfo {
+    fn render(self) -> String {
+        let mut parts = vec![format!("### {}\n___\n", self.title)];
+        if let Some(signature) = self.signature {
+            parts.push(code_block(&signature));
+        }
+        if let Some(documentation) = self.documentation.filter(|doc| !doc.is_empty()) {
+            parts.push(documentation);
+        }
+        if let Some(link) = self.definition_link {
+            let label = if self.title.starts_with("File") { "Go to file" } else { "Go to declaration" };
+            parts.push(format!("[{label}]({link})"));
+        }
+        parts.join("\n\n")
+    }
+
+    fn declaration(title: impl Into<String>, body: String, link: Option<String>) -> String {
+        Self {
+            title: title.into(),
+            signature: None,
+            documentation: Some(body),
+            definition_link: link,
+        }.render()
+    }
+}
 
 struct Hover<'db> {
     db: &'db SalsaDb,
@@ -97,7 +133,10 @@ impl<'db> Hover<'db> {
                 let enum_data = ctx.enum_data?;
                 Some(self.format_variant(enum_data, *variant_id, self.resolver.file))
             }
-            SemanticId::Expr(expr_id) => self.resolver.resolve_expr(*expr_id, store, sourcemap).and_then(|res| self.hover_resolution(&res)),
+            SemanticId::Expr(expr_id) => match &store.exprs[*expr_id] {
+                Expr::Literal(literal) => Some(self.format_literal(literal)),
+                _ => self.resolver.resolve_expr(*expr_id, store, sourcemap).and_then(|res| self.hover_resolution(&res)),
+            },
             SemanticId::Type(type_id) => self.hover_type(&store.types[*type_id], &store.types, u8::MAX),
             SemanticId::TypeSegment { ty, segment } => {
                 self.hover_type(&store.types[*ty], &store.types, *segment)
@@ -106,11 +145,16 @@ impl<'db> Hover<'db> {
     }
 
     fn hover_def(&self, def_id: &DefId) -> anyhow::Result<String> {
+        let body = self.hover_def_body(def_id)?;
+        Ok(HoverInfo::declaration(self.def_title(def_id), body, self.definition_link(def_id)))
+    }
+
+    fn hover_def_body(&self, def_id: &DefId) -> anyhow::Result<String> {
         match def_id {
-            DefId::File(_) => Ok("file".into()),
+            DefId::File(_) => Ok("File".into()),
             DefId::Udvt(id) => {
                 let data = self.db.udvt_data(*id);
-                Ok(Self::code_block(&format!("type {} is {}", data.name, data.underlying)))
+                Ok(code_block(&format!("type {} is {}", data.name, data.underlying)))
             }
             DefId::Contract(id) => self.hover_contract(id),
             DefId::Library(id) => self.hover_library(id),
@@ -144,7 +188,25 @@ impl<'db> Hover<'db> {
             }
         parts.push(var_data.name.as_str().to_string());
         let sig = parts.join(" ");
+        let sig = if var_data.kind == VariableKind::Const {
+            self.constant_signature(*var_id, &var_data, &sig)
+        } else {
+            sig
+        };
         Ok(Self::format_with_doc(&sig, doc))
+    }
+
+    fn constant_signature(&self, var_id: VarId, var_data: &crate::hir::item_data::VarData, signature: &str) -> String {
+        let Some(init) = var_data.init else { return signature.to_string(); };
+        let Some(range) = var_data.expr_store.range_to_semantic.iter().find_map(|(range, semantic)| {
+            matches!(semantic, SemanticId::Expr(expr) if *expr == init).then_some(*range)
+        }) else { return signature.to_string(); };
+        let (file, _) = DefId::Var(var_id).file_id();
+        let text = self.db.text(file);
+        let Some(source) = text.get(range.start as usize..range.end as usize) else {
+            return signature.to_string();
+        };
+        format!("{signature} = {source}")
     }
 
     fn hover_function(&self, fn_id: &FunctionId) -> anyhow::Result<String> {
@@ -164,20 +226,16 @@ impl<'db> Hover<'db> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let ret_str = if ret.is_empty() { String::new() } else { format!(" returns ({ret})") };
-                let vis_str = match fn_data.vis {
-                    Visibility::Public => "public ",
-                    Visibility::Private => "private ",
-                    Visibility::External => "external ",
-                    Visibility::Internal => "",
-                };
-                let mut_str = match fn_data.mutability {
-                    Mutability::Payable => "payable ",
-                    Mutability::View => "view ",
-                    Mutability::Pure => "pure ",
-                    Mutability::NonPayable => "",
-                };
                 let doc = self.db.docs(DefId::Function(*fn_id));
-                let sig = format!("function {}({params}) {}{}{ret_str}", fn_data.name, vis_str, mut_str);
+                let sig = match fn_data.kind {
+                    FunctionKind::Regular => format!("function {}({params}) {}{}{ret_str}", fn_data.name, fn_data.vis.as_str(), fn_data.mutability.as_str()),
+                    FunctionKind::Constructor => format!("constructor({params}) {}{}", fn_data.vis.as_str(), fn_data.mutability.as_str()),
+                    FunctionKind::Fallback => {
+                        let mutability = (fn_data.mutability == Mutability::Payable).then_some("payable ").unwrap_or_default();
+                        format!("fallback({params}) external {mutability}{ret_str}")
+                    }
+                    FunctionKind::Receive => "receive() external payable".to_string(),
+                };
         Ok(Self::format_with_doc(&sig, doc))
     }
 
@@ -295,7 +353,12 @@ impl<'db> Hover<'db> {
                     .resolve_path(segments)
                     .and_then(|res| self.hover_resolution(&res))
             }
-            _ => Some(Self::code_block(&ty.to_string(types))),
+            _ => Some(HoverInfo {
+                title: "Type".into(),
+                signature: Some(ty.to_string(types)),
+                documentation: None,
+                definition_link: None,
+            }.render()),
         }
     }
 
@@ -308,7 +371,12 @@ impl<'db> Hover<'db> {
         let ret = builtin.return_type.as_ref()
             .map(|ty| format!(" -> {}", ty.display(self.db)))
             .unwrap_or_default();
-        Some(format!("{}\n---\n{}", Self::code_block(&format!("function {}({}){}", builtin.name, params, ret)), builtin.doc))
+        Some(HoverInfo {
+            title: "Builtin_function".into(),
+            signature: Some(format!("function {}({}){}", builtin.name, params, ret)),
+            documentation: Some(builtin.doc.to_string()),
+            definition_link: None,
+        }.render())
     }
 
     fn hover_resolution(&self, res: &Resolution) -> Option<String> {
@@ -316,13 +384,18 @@ impl<'db> Hover<'db> {
             Resolution::File(f) => {
                 let path = f.path(self.db);
                 let file_name = path.file_name().unwrap_or_default();
-                Some(format!("### File: {file_name} \n---\n [{path}](file://{path})"))
+                Some(HoverInfo {
+                    title: format!("File: {file_name}"),
+                    signature: None,
+                    documentation: None,
+                    definition_link: Some(format!("file://{path}")),
+                }.render())
             }
             Resolution::Local(local_id) => {
                 let body = self.resolver.body()?;
                 Some(self.format_local(&body.locals[*local_id], &body.expr_store))
             }
-            Resolution::Callable(callable) => self.hover_callable(callable),
+            Resolution::Callable(callable) | Resolution::Called(callable) => self.hover_callable(callable),
             Resolution::Var(def) => self.hover_def(def).ok(),
             Resolution::TypeKey(tk) => {
                 if let Some(def_id) = tk.def_id() {
@@ -359,9 +432,19 @@ impl<'db> Hover<'db> {
                 }
             }
             Resolution::Builtin(id) => {
-                Some(Self::format_with_doc(&format!("builtin {}", id.name()), Some(id.doc().into())))
+                Some(HoverInfo {
+                    title: "Builtin".into(),
+                    signature: Some(id.name().to_string()),
+                    documentation: Some(id.doc().to_string()),
+                    definition_link: None,
+                }.render())
             }
-            Resolution::MetaType(_) => Some("#### meta type cast".into()),
+            Resolution::MetaType(_) => Some(HoverInfo {
+                title: "Meta_type".into(),
+                signature: Some("type(...)".into()),//we can show more here
+                documentation: None,
+                definition_link: None,
+            }.render()),
             Resolution::Super(def) => self
                 .hover_def(def)
                 .ok()
@@ -371,19 +454,54 @@ impl<'db> Hover<'db> {
 
     fn format_local(&self, local: &Local, store: &ExprStore) -> String {
         let ty = store.types[*local.type_name()].to_string(&store.types);
-        Self::code_block(&format!("{ty} {} ({} {})", local.name(), local.location(), local.kind()))
+        HoverInfo {
+            title: "Local".into(),
+            signature: Some(format!("{ty} {} ({} {})", local.name(), local.location(), local.kind())),
+            documentation: None,
+            definition_link: None,
+        }.render()
     }
 
     fn format_field(&self, field: &Field, store: &ExprStore, file: File) -> String {
         let ty = store.types[field.type_name].to_string(&store.types);
-        let doc = self.db.decl_docs(file, field.range);
-        Self::format_with_doc(&format!("{ty} {}", field.name), doc)
+        let doc = self.db.inline_docs(file, field.range);
+        HoverInfo {
+            title: "Field".into(),
+            signature: Some(format!("{ty} {}", field.name)),
+            documentation: doc,
+            definition_link: Some(self.range_link(file, field.range)),
+        }.render()
     }
 
     fn format_variant(&self, enum_data: &EnumData, variant_id: VariantId, file: File) -> String {
         let variant = &enum_data.variants[variant_id];
-        let doc = self.db.decl_docs(file, variant.range);
-        Self::format_with_doc(&format!("enum variant {}.{}", enum_data.name, variant.name), doc)
+        let doc = self.db.inline_docs(file, variant.range);
+        HoverInfo {
+            title: "Enum_variant".into(),
+            signature: Some(format!("enum variant {}.{}", enum_data.name, variant.name)),
+            documentation: doc,
+            definition_link: Some(self.range_link(file, variant.range)),
+        }.render()
+    }
+
+    fn format_literal(&self, literal: &Literal) -> String {
+        let inferred = match literal.type_key().typ() {
+            Type::Literal(value) => value.inferred_type()
+                .map(|ty| ty.display(self.db))
+                .unwrap_or_else(|| "literal".to_string()),
+            _ => "literal".to_string(),
+        };
+        HoverInfo {
+            title: match literal {
+                Literal::Boolean(_) => "Boolean_literal",
+                Literal::Number(_) => "Number_literal",
+                Literal::String(_) => "String_literal",
+                Literal::HexString(_) => "Hex_string_literal",
+            }.to_string(),
+            signature: Some(format!("{} : {}", literal.source_text(), inferred)),
+            documentation: None,
+            definition_link: None,
+        }.render()
     }
 
     fn format_resolved_type(&self, ty: &Type) -> Option<String> {
@@ -391,18 +509,58 @@ impl<'db> Hover<'db> {
             Type::Literal(literal) => literal.inferred_type()?,
             _ => ty.clone(),
         };
-        Some(Self::code_block(&inferred.display(self.db)))
+        Some(HoverInfo {
+            title: "type".into(),
+            signature: Some(inferred.display(self.db)),
+            documentation: None,
+            definition_link: None,
+        }.render())
     }
     
     fn format_with_doc(sig: &str, doc: Option<String>) -> String {
         match doc {
-            Some(d) if !d.is_empty() => format!("{}\n---\n{d}", Self::code_block(sig)),
-            _ => Self::code_block(sig),
+            Some(d) if !d.is_empty() => format!("{}\n---\n{d}", code_block(sig)),
+            _ => code_block(sig),
         }
     }
-    
-    fn code_block(code: &str) -> String {
-        format!("```solidity\n{code}\n```")
+
+    fn def_title(&self, def_id: &DefId) -> String {
+        match def_id {
+            DefId::Function(id) => match self.db.function_data(*id).kind {
+                FunctionKind::Regular => "Function",
+                FunctionKind::Constructor => "Constructor",
+                FunctionKind::Fallback => "Fallback",
+                FunctionKind::Receive => "Receive",
+            }.into(),
+            DefId::Modifier(_) => "Modifier".into(),
+            DefId::Struct(_) => "Struct".into(),
+            DefId::Enum(_) => "Enum".into(),
+            DefId::Event(_) => "Event".into(),
+            DefId::Error(_) => "Error".into(),
+            DefId::Contract(_) => "Contract".into(),
+            DefId::Interface(_) => "Interface".into(),
+            DefId::Library(_) => "Library".into(),
+            DefId::Udvt(_) => "Type".into(),
+            DefId::Var(_) => "Variable".into(),
+            DefId::File(_) => "File".into(),
+            DefId::Import(_) => "Import".into(),
+            DefId::Using(_) => "Using".into(),
+        }
+    }
+
+    fn definition_link(&self, def_id: &DefId) -> Option<String> {
+        let (file, Some(ast_id)) = def_id.file_id() else { return None; };
+        let node = self.db.ast_id_map(file).get_node(&self.db.root(file), ast_id)?;
+        Some(self.range_link(file, NodeRange::from(&node.node())))
+    }
+
+    fn range_link(&self, file: File, range: NodeRange) -> String {
+        let path = file.path(self.db);
+        let line = self.db.root(file)
+            .named_child_node(range)
+            .map(|node| node.node().start_position().row + 1)
+            .unwrap_or(1);
+        format!("file://{}#L{}", path, line)
     }
 }
 
@@ -416,7 +574,7 @@ pub fn hover(db: &SalsaDb, request: Request) -> anyhow::Result<Response> {
 
     let position = params.text_document_position_params.position;
     let (file, offset) = db.convert(&path, position);
-    let node = db.node_at(file, offset).context("No node at cursor")?;
+    let node = db.named_node_at(file, offset).context("No node at cursor")?;
     let ctx = Context::new(db, file, offset);
     let resolver = Resolver::build(db, &ctx);
 

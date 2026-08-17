@@ -6,10 +6,10 @@ use rustc_hash::FxHashMap;
 use tree_sitter::Node;
 
 use crate::ast::kinds::{FieldKind, NodeKind};
-use crate::ast::{AstNode, Contract, Enum, Error, Event, Function, HasName, Import, ImportType, Interface, Library, Modifier, NodeRange, Struct, ToAstNode, Udvt, Using, Var};
+use crate::ast::{AstNode, Contract, Enum, Error, Event, Function, FunctionKind, HasName, Import, ImportType, Interface, Library, Modifier, NodeRange, Struct, ToAstNode, Udvt, Using, Var};
 use crate::hir::body_map::{ByteOffset, Local, LocalId, Location, SemanticId, VariableKind};
 use crate::hir::exprs::{Expr, ExprBuilder, ExprId, Name};
-use crate::hir::types::{Mutability, Primitive, TypeBuilder, TypeId, TypeName, Visibility};
+use crate::hir::types::{Mutability, Primitive, TypeBuilder, TypeId, TypeKey, TypeName, Visibility};
 
 #[derive(PartialEq, Eq)]
 pub struct ExprStore {
@@ -82,12 +82,19 @@ pub struct EnumData {
 #[derive(PartialEq, Eq)]
 pub struct FunctionData {
     pub name: Name,
+    pub kind: FunctionKind,
     pub vis: Visibility,
     pub mutability: Mutability,
     //TODO - Modifier invocations
     pub parameters: Arena<Local>,//parameters and returns
     pub return_parameters: Arena<Local>,
     pub expr_store: ExprStore,
+}
+
+#[derive(PartialEq, Eq)]
+pub struct FunctionSignature {
+    pub params: Box<[TypeKey]>,
+    pub returns: Box<[TypeKey]>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -98,6 +105,11 @@ pub struct EventData {
 }
 
 #[derive(PartialEq, Eq)]
+pub struct EventSignature {
+    pub params: Box<[TypeKey]>,
+}
+
+#[derive(PartialEq, Eq)]
 pub struct ErrorData {
     pub name: Name,
     pub parameters: Arena<Local>,
@@ -105,10 +117,20 @@ pub struct ErrorData {
 }
 
 #[derive(PartialEq, Eq)]
+pub struct ErrorSignature {
+    pub params: Box<[TypeKey]>,
+}
+
+#[derive(PartialEq, Eq)]
 pub struct ModifierData {
     pub name: Name,
     pub parameters: Arena<Local>,
     pub expr_store: ExprStore,
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ModifierSignature {
+    pub params: Box<[TypeKey]>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -492,6 +514,7 @@ impl ItemBuilder {
 
         FunctionData {
             name,
+            kind: func.kind(),
             vis,
             mutability,
             parameters,

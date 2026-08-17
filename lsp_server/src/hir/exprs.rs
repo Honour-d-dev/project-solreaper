@@ -11,7 +11,7 @@ use crate::hir::types::{LiteralType, Type, TypeKey};
 pub type Name = SmolStr;
 pub type ExprId = Idx<Expr>;//This forces builder to use Arenas for exprs, Ideally the builder should be able to store & id exprs however they want
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -85,6 +85,12 @@ impl BinaryOp {
     }
 }
 
+impl std::fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum Expr {
     Ident(Name),
@@ -122,16 +128,17 @@ pub enum Literal {
 impl Literal {
     fn parse_number(text: &str) -> LiteralType {
         let text = text.trim().replace('_', "");
+        let (text, multiplier) = Self::number_unit(&text);
         if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
             if let Some(value) = BigInt::parse_bytes(hex.as_bytes(), 16) {
-                return LiteralType::Integer(value);
+                return LiteralType::Integer(value * multiplier);
             }
         }
 
         let (mantissa, exponent) = text
             .split_once(['e', 'E'])
             .map(|(mantissa, exponent)| (mantissa, exponent.parse::<i32>().unwrap_or(0)))
-            .unwrap_or((&text, 0));
+            .unwrap_or((text, 0));
         let (negative, mantissa) = mantissa.strip_prefix('-')
             .map(|value| (true, value))
             .or_else(|| mantissa.strip_prefix('+').map(|value| (false, value)))
@@ -142,6 +149,7 @@ impl Literal {
         if negative {
             numerator = -numerator;
         }
+        numerator *= multiplier;
 
         let scale = fraction.len() as i32 - exponent;
         if scale <= 0 {
@@ -155,6 +163,41 @@ impl Literal {
                 denominator *= 10;
             }
             LiteralType::Rational { numerator, denominator }
+        }
+    }
+
+    fn number_unit(text: &str) -> (&str, BigInt) {
+        let units = [
+            ("seconds", 1u64),
+            ("minutes", 60),
+            ("hours", 60 * 60),
+            ("days", 60 * 60 * 24),
+            ("weeks", 60 * 60 * 24 * 7),
+            ("years", 60 * 60 * 24 * 365),
+            ("gwei", 1_000_000_000),
+            ("wei", 1),
+            ("szabo", 1_000_000_000_000),
+            ("finney", 1_000_000_000_000_000),
+            ("ether", 1_000_000_000_000_000_000),
+        ];
+        units.iter()
+            .find_map(|(unit, multiplier)| text.strip_suffix(unit).map(|number| (number.trim_end(), BigInt::from(*multiplier))))
+            .unwrap_or((text, BigInt::from(1u8)))
+    }
+
+    pub fn source_text(&self) -> String {
+        match self {
+            Literal::Boolean(value) => value.to_string(),
+            Literal::Number(value) => value.to_string(),
+            Literal::String(value) => value.to_string(),
+            Literal::HexString(value) => value.to_string(),
+        }
+    }
+
+    pub fn integer_value(&self) -> Option<BigInt> {
+        match self.literal_type() {
+            LiteralType::Integer(value) => Some(value),
+            _ => None,
         }
     }
 
@@ -230,6 +273,9 @@ pub trait  ExprBuilder {
                 let expr = Expr::MetaType(ty);
                 // still alloc as call because of shape
                 Some(self.alloc_call_expr(expr, node, ident))
+            }
+            NodeKind::INCOMPLETE_MEMBER_EXPRESSION => {
+                node.child_by_field_id(FieldKind::OBJECT.into()).and_then(|obj| self.lower_expr(obj))
             }
             NodeKind::MEMBER_EXPRESSION => {
                 let obj = node.child_by_field_id(FieldKind::OBJECT.into()).and_then(|obj| self.lower_expr(obj))?;
@@ -366,5 +412,18 @@ pub trait  ExprBuilder {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Literal;
+    use num_bigint::BigInt;
+
+    #[test]
+    fn numeric_units_are_scaled_before_type_inference() {
+        assert_eq!(Literal::Number("1 ether".into()).integer_value(), Some(BigInt::from(1_000_000_000_000_000_000u64)));
+        assert_eq!(Literal::Number("2 hours".into()).integer_value(), Some(BigInt::from(7_200u64)));
+        assert_eq!(Literal::Number("3 gwei".into()).integer_value(), Some(BigInt::from(3_000_000_000u64)));
     }
 }
