@@ -44,6 +44,7 @@ Then open the project (`extension/src/extension.ts`) in VS Code and press `F5` t
 - Hover 👍
 - Goto definition 👍
 - Auto-completion 👍
+
 ...up next - Diagnostics.
 
 ### Notice
