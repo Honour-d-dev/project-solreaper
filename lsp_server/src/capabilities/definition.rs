@@ -28,7 +28,7 @@ pub fn definition(db: &SalsaDb, request: Request) -> Result<Response> {
     let path = to_utf8path(&params.text_document_position_params.text_document.uri)?;
     let position = params.text_document_position_params.position;
     let (file, offset) = db.convert(&path, position);
-    let node = db.node_at(file, offset).context("No node at cursor")?;//we do node_at inside context already
+    let node = db.named_node_at(file, offset).context("No node at cursor")?;//we do node_at inside context already
     let ctx = Context::new(db, file, offset);
     let resolver = Resolver::build(db, &ctx);
     let range = NodeRange::from(&node.node());
@@ -263,7 +263,7 @@ fn resolution_targets(
         Resolution::Local(local_id) => local_definition(file, store, local_id),
         Resolution::Var(def) => vec![DefinitionTarget::Def(def)],
         Resolution::File(file) => vec![DefinitionTarget::File(file)],
-        Resolution::Callable(callable) => callable
+        Resolution::Callable(callable) | Resolution::Called(callable) => callable
             .def()
             .map(|def| vec![DefinitionTarget::Def(def)])
             .unwrap_or_default(),
