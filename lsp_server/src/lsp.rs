@@ -1,5 +1,8 @@
+use crate::capabilities::completion::completion;
 use crate::capabilities::definition::definition;
 use crate::capabilities::hover::hover;
+use crate::capabilities::view_ast::{view_ast, ViewAstRequest};
+use crate::capabilities::view_hir::{view_hir, ViewHirRequest};
 use crate::loader;
 use crate::salsa::{SalsaDb};
 use crate::utilities::{log_info, to_utf8path};
@@ -10,7 +13,7 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidOpenTextDocument, Initialized,
     Notification as LspNotification,
 };
-use lsp_types::request::{GotoDefinition, HoverRequest, Request as LspRequest};
+use lsp_types::request::{Completion as CompletionRequest, GotoDefinition, HoverRequest, Request as LspRequest};
 use lsp_types::{
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
 };
@@ -71,6 +74,30 @@ impl SolidityLspServer {
             match definition(&self.db, request) {
                 Ok(response) => self.sender.send(Message::Response(response))?,
                 Err(err) => log_info(format!("No definition location: Error - {}", err)),
+            };
+            return Ok(());
+        }
+
+        if request.method == CompletionRequest::METHOD {
+            match completion(&self.db, request) {
+                Ok(response) => self.sender.send(Message::Response(response))?,
+                Err(err) => log_info(format!("No completion: Error - {}", err)),
+            };
+            return Ok(());
+        }
+
+        if request.method == ViewHirRequest::METHOD {
+            match view_hir(&self.db, request) {
+                Ok(response) => self.sender.send(Message::Response(response))?,
+                Err(err) => log_info(format!("viewHir failed: Error - {}", err)),
+            };
+            return Ok(());
+        }
+
+        if request.method == ViewAstRequest::METHOD {
+            match view_ast(&self.db, request) {
+                Ok(response) => self.sender.send(Message::Response(response))?,
+                Err(err) => log_info(format!("viewAst failed: Error - {}", err)),
             };
             return Ok(());
         }
