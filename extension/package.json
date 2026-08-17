@@ -23,6 +23,30 @@
         "extensions": [".sol"]
       }
     ],
+    "commands": [
+      {
+        "command": "solidityLsp.viewHir",
+        "title": "Solidity: View HIR (Lowered)",
+        "category": "Solidity LSP"
+      },
+      {
+        "command": "solidityLsp.viewAst",
+        "title": "Solidity: View AST (Named Tree)",
+        "category": "Solidity LSP"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "solidityLsp.viewHir",
+          "when": "editorLangId == solidity"
+        },
+        {
+          "command": "solidityLsp.viewAst",
+          "when": "editorLangId == solidity"
+        }
+      ]
+    },
     "configuration": {
       "title": "Solidity LSP",
       "properties": {
