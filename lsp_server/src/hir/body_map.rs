@@ -427,7 +427,7 @@ mod tests {
 
     use crate::{
         ast, hir::exprs::Literal, loader::{LoadedFile, SourceRootBundle}, salsa::{FileId, RootDatabase, SalsaDatabase}, workspace::{
-            Package as WsPackage, PackageConfig, PackageId, PackageKind, SourceRootId, Workspace,
+            Package as WsPackage, PackageConfig, PackageId, Workspace,
         },
     };
     use ropey::Rope;
@@ -458,19 +458,14 @@ mod tests {
         package_id.insert(root.clone(), PackageId(0));
 
         let workspace = Workspace {
-            root: root.clone(),
             packages: vec![WsPackage {
-                kind: PackageKind::Foundry,
                 root: root.clone(),
-                source_roots: vec![SourceRootId(0)],
                 config: PackageConfig::default(),
-                is_dependency: false,
             }],
             package_id,
         };
 
         let bundle = SourceRootBundle {
-            source_root_id: SourceRootId(0),
             package_id: PackageId(0),
             is_dependency: false,
             files: vec![LoadedFile {

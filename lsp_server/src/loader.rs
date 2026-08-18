@@ -4,7 +4,7 @@ use ropey::Rope;
 use std::fs::File;
 
 use crate::workspace::{
-    discover_workspace, DiscoveredSourceRoot, PackageId, SourceRootId, Workspace,
+    discover_workspace, DiscoveredSourceRoot, PackageId, Workspace,
 };
 
 pub(crate) fn create_loader() -> (Sender<LoadMsg>, Receiver<LoadMsg>) {
@@ -30,7 +30,6 @@ pub(crate) struct LoadedFile {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourceRootBundle {
-    pub source_root_id: SourceRootId,
     pub package_id: PackageId,
     pub is_dependency: bool,
     pub files: Vec<LoadedFile>,
@@ -46,7 +45,7 @@ struct Loader {
 impl Loader {
     fn new(root: Utf8PathBuf, tx: Sender<LoadMsg>) -> Self {
         Self {
-            workspace: Workspace::empty(root.clone()),
+            workspace: Workspace::empty(),
             root,
             tx,
             source_roots: Vec::new(),
@@ -88,7 +87,6 @@ impl Loader {
                 .tx
                 .send(LoadMsg::SourceRootBundle {
                     bundle: SourceRootBundle {
-                        source_root_id: source_root.id,
                         package_id: source_root.package_id,
                         is_dependency: source_root.is_dependency,
                         files,

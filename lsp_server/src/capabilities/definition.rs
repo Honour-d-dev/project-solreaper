@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use lsp_server::{Request, Response};
 use lsp_types::{
-    GotoDefinitionParams, GotoDefinitionResponse, Location as LspLocation, Position, Range, Url,
+    GotoDefinitionParams, GotoDefinitionResponse, Location as LspLocation, Position, Range,
 };
 use ropey::Rope;
 
@@ -13,7 +13,7 @@ use crate::hir::types::TypeName;
 use crate::ir::def_map::DefId;
 use crate::salsa::root_db::RootDatabase;
 use crate::salsa::{File, HirDatabase, SalsaDb};
-use crate::utilities::to_utf8path;
+use crate::utilities::{to_url, to_utf8path};
 
 use super::SemanticCtx;
 
@@ -321,7 +321,7 @@ fn locations_for_target(db: &SalsaDb, target: DefinitionTarget) -> Option<LspLoc
 }
 
 fn location_for_range(db: &SalsaDb, file: File, range: NodeRange) -> Option<LspLocation> {
-    let uri = Url::from_file_path(file.path(db).as_std_path()).ok()?;
+    let uri = to_url(file.path(db));
     let rope = db.rope(file);
     Some(LspLocation {
         uri,

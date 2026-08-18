@@ -1,4 +1,3 @@
-use std::format;
 
 use anyhow::{Context as _, Ok};
 use la_arena::Arena;
@@ -13,7 +12,7 @@ use crate::hir::resolver::{Callable, Context, Resolution, Resolver};
 use crate::hir::types::{Mutability, Type, TypeName, Visibility};
 use crate::ir::def_map::DefId;
 use crate::salsa::{File, HirDatabase, RootDatabase, SalsaDb};
-use crate::utilities::{log_info, to_utf8path};
+use crate::utilities::{log_info, to_url, to_utf8path};
 
 use super::SemanticCtx;
 
@@ -388,7 +387,7 @@ impl<'db> Hover<'db> {
                     title: format!("File: {file_name}"),
                     signature: None,
                     documentation: None,
-                    definition_link: Some(format!("file://{path}")),
+                    definition_link: Some(to_url(path.as_path()).to_string()),
                 }.render())
             }
             Resolution::Local(local_id) => {
@@ -560,7 +559,9 @@ impl<'db> Hover<'db> {
             .named_child_node(range)
             .map(|node| node.node().start_position().row + 1)
             .unwrap_or(1);
-        format!("file://{}#L{}", path, line)
+        let mut uri = to_url(path.as_path());
+        uri.set_fragment(Some(&format!("L{line}")));
+        uri.to_string()
     }
 }
 

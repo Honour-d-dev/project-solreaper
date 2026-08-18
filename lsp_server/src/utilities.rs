@@ -7,20 +7,44 @@ use serde::Serialize;
 use lsp_types::{Position};
 
 
+pub(crate) fn canonicalize_path(path: &Utf8Path) -> anyhow::Result<Utf8PathBuf> {
+    path.canonicalize_utf8()
+        .context("failed to canonicalize path")
+}
+
+pub(crate) fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
+    if let Ok(path) = canonicalize_path(path) {
+        return path;
+    }
+
+    // canonicalizing can fail if file has not been saved to disk.
+    // In this case, we can still try to canonicalize the parent path then join the file name.
+    let (Some(file_name), Some(parent)) = (path.file_name(), path.parent()) else {
+        return path.to_path_buf();
+    };
+
+    let normalized_parent = canonicalize_path(parent).unwrap_or_else(|_| parent.to_path_buf());
+    normalized_parent.join(file_name)
+}
+
 pub(crate) fn to_utf8path(uri: &Url) -> anyhow::Result<Utf8PathBuf> {
-    uri.to_file_path()
-        .ok()
-        .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
-        .context("failed to convert uri to path")
+    let path = uri
+        .to_file_path()
+        .map_err(|_| anyhow::anyhow!("failed to convert URI to path"))?;
+    let path = Utf8PathBuf::from_path_buf(path)
+        .map_err(|_| anyhow::anyhow!("path is not valid UTF-8"))?;
+    Ok(normalize_path(&path))
+}
+
+pub(crate) fn to_url(path: &Utf8Path) -> Url {
+    Url::from_file_path(path).expect("failed to convert path to url")
 }
 
 ///Resolves to a new path relative to a base path
 pub(crate) fn resolve_path(base: &Utf8PathBuf, rel_path: impl AsRef<Utf8Path>) -> anyhow::Result<Utf8PathBuf> {
     let resolved_path = base.parent().context("Error: can't resolve path, base path has no parent")?
-    .join(rel_path)
-    .canonicalize_utf8()
-    .context("failed to canonicalize resolved path to standard utf8")?;
-    Ok(resolved_path)
+        .join(rel_path);
+    canonicalize_path(&resolved_path)
 }
 
 /// Resolves a Solidity import string, checking remappings first, then falling back to relative resolution.
@@ -47,10 +71,13 @@ pub(crate) fn resolve_import(
 
     if let Some((prefix, target)) = best_match {
         let suffix = &import_str[prefix.len()..];
-        let resolved = project_root
-            .join(target)
-            .join(suffix)
-            .canonicalize_utf8()
+        let remap_root = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            project_root.join(target)
+        };
+        let resolved = remap_root.join(suffix);
+        let resolved = canonicalize_path(&resolved)
             .with_context(|| format!("failed to resolve remapped import `{import_str}` via {prefix}={target}"))?;
         return Ok(resolved);
     }

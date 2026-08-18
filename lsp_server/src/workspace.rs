@@ -1,4 +1,3 @@
-#![allow(unused)]
 use std::fs;
 use std::sync::mpsc;
 
@@ -6,21 +5,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use ignore::{WalkBuilder, WalkState};
 use rustc_hash::FxHashMap;
 
-
-/// @TODO add support for hybrid Packages (e.g., foundry + hardhat)
-/// Hardhat still needs more work
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PackageKind {
-    #[default]
-    Foundry,
-    Hardhat,
-}
+use crate::utilities::normalize_path;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PackageId(pub usize);
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SourceRootId(pub u32);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Remapping {
@@ -33,18 +21,45 @@ pub(crate) struct PackageConfig {
     pub remappings: Vec<Remapping>,
 }
 
+/// The package.json data needed to expand the package graph.
+///
+/// We intentionally keep this small. JavaScript build configuration and plugin
+/// execution are outside the LSP's workspace-discovery responsibilities.
+#[derive(Debug, Clone, Default)]
+struct PackageManifest {
+    workspace_patterns: Vec<String>,
+    dependency_names: Vec<String>,
+}
+
+/// Configuration files found at one package root.
+///
+/// A package can have Foundry and Hardhat configuration at the same time. The
+/// descriptor therefore records capabilities instead of assigning one package
+/// kind to the root.
+#[derive(Debug, Clone, Default)]
+struct PackageDescriptor {
+    root: Utf8PathBuf,
+    foundry_config: Option<Utf8PathBuf>,
+    hardhat_config: Option<Utf8PathBuf>,
+    manifest: Option<PackageManifest>,
+    remapping: Option<Utf8PathBuf>,
+    is_dependency: bool,
+}
+
+#[derive(Debug, Clone)]
+enum PackageReference {
+    Workspace(Utf8PathBuf),
+    Dependency(String),
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Package {
-    pub kind: PackageKind,
     pub root: Utf8PathBuf,
-    pub source_roots: Vec<SourceRootId>,
     pub config: PackageConfig,
-    pub is_dependency: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoveredSourceRoot {
-    pub id: SourceRootId,
     pub package_id: PackageId,
     pub files: Vec<Utf8PathBuf>,
     pub is_dependency: bool,
@@ -58,15 +73,13 @@ pub(crate) struct DiscoveredWorkspace {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Workspace {
-    pub root: Utf8PathBuf,
     pub packages: Vec<Package>,
     pub package_id: FxHashMap<Utf8PathBuf, PackageId>,
 }
 
 impl Workspace {
-    pub(crate) fn empty(root: Utf8PathBuf) -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
-            root,
             packages: Vec::new(),
             package_id: FxHashMap::default(),
         }
@@ -75,109 +88,57 @@ impl Workspace {
 
 const PRUNED_DIRS: [&str; 5] = [".git", "node_modules", "out", "artifacts", "cache"];
 
+/// Discover all packages before the Salsa database is built.
+///
+/// The traversal follows package manifests and known Foundry dependency roots,
+/// but never crawls the workspace's `node_modules` directory blindly. Each
+/// resolved package is converted into source roots before DefMaps can query it.
 pub(crate) fn discover_workspace(root: &Utf8Path) -> DiscoveredWorkspace {
-    let mut workspace = Workspace::empty(root.to_owned());
+    let mut workspace = Workspace::empty();
     let mut source_roots = Vec::<DiscoveredSourceRoot>::new();
-    let mut pending_foundry = Vec::<(Utf8PathBuf, Utf8PathBuf, bool)>::new();
 
-    for (kind, package_root, config) in find_package_roots(root) {
-        let is_dependency = is_dependency_package_path(root, &package_root);
-        match kind {
-            PackageKind::Foundry => pending_foundry.push((package_root, config, is_dependency)),
-            PackageKind::Hardhat => {
-                if is_dependency {
-                    // Eager dependency loading is currently Foundry-only.
-                    continue;
-                }
-                if workspace.package_id.contains_key(&package_root) {
-                    continue;
-                }
-                let (source_root_dirs, package_config) = hardhat_layout(&package_root, &config);
-                add_package(
-                    &mut workspace,
-                    &mut source_roots,
-                    kind,
-                    package_root,
-                    source_root_dirs,
-                    package_config,
-                    false,
-                );
-            }
-        }
-    }
-
-    while let Some((package_root, config, is_dependency)) = pending_foundry.pop() {
-        if workspace.package_id.contains_key(&package_root) {
+    for descriptor in discover_package_graph(root) {
+        let is_dependency = descriptor.is_dependency;
+        let (source_root_dirs, package_config) = package_layout(&descriptor, !is_dependency, is_dependency);
+        if workspace.package_id.contains_key(&descriptor.root) {
             continue;
         }
-
-        let (source_root_dirs, dependency_roots, package_config) =
-            foundry_layout(&package_root, &config, !is_dependency);
-
         add_package(
             &mut workspace,
             &mut source_roots,
-            PackageKind::Foundry,
-            package_root,
+            descriptor.root,
             source_root_dirs,
             package_config,
             is_dependency,
         );
-
-        // Eager dependency package discovery for Foundry only.
-        for dep_root in dependency_roots {
-            for (kind, dep_package_root, dep_config) in find_package_roots(&dep_root) {
-                if kind != PackageKind::Foundry {
-                    continue;
-                }
-
-                if workspace.package_id.contains_key(&dep_package_root) {
-                    continue;
-                }
-
-                pending_foundry.push((dep_package_root, dep_config, true));
-            }
-        }
     }
 
-    DiscoveredWorkspace {
-        workspace,
-        source_roots,
-    }
-}
-
-fn is_dependency_package_path(workspace_root: &Utf8Path, package_root: &Utf8Path) -> bool {
-    package_root
-        .strip_prefix(workspace_root)
-        .map(|rel| {
-            rel.as_str()
-                .split('/')//FIXME: windows split is \ 
-                .any(|segment| segment == "lib" || segment == "node_modules")
-        })
-        .unwrap_or(false)
+    DiscoveredWorkspace { workspace, source_roots }
 }
 
 fn add_package(
     workspace: &mut Workspace,
     discovered_source_roots: &mut Vec<DiscoveredSourceRoot>,
-    kind: PackageKind,
     package_root: Utf8PathBuf,
     source_root_dirs: Vec<Utf8PathBuf>,
     config: PackageConfig,
     is_dependency: bool,
 ) {
+    let package_root = normalize_path(&package_root);
+    let source_root_dirs = source_root_dirs.into_iter().map(|path| normalize_path(&path)).collect::<Vec<_>>();
+    let collected_roots = source_root_dirs.into_iter()
+        .map(|root| (root.clone(), collect_sol_files(std::slice::from_ref(&root))))
+        .filter(|(_, files)| !files.is_empty())
+        .collect::<Vec<_>>();
+    if collected_roots.is_empty() {
+        return;
+    }
+
     let package_id = PackageId(workspace.packages.len());
     workspace.package_id.insert(package_root.clone(), package_id);
 
-    let mut source_roots = Vec::new();
-
-    for root in source_root_dirs {//par_iter
-        let root_files = collect_sol_files(std::slice::from_ref(&root));
-        let source_root_id = SourceRootId(discovered_source_roots.len() as u32);
-
-        source_roots.push(source_root_id);
+    for (_root, root_files) in collected_roots {
         discovered_source_roots.push(DiscoveredSourceRoot {
-            id: source_root_id,
             package_id,
             files: root_files,
             is_dependency,
@@ -185,37 +146,69 @@ fn add_package(
     }
 
     workspace.packages.push(Package {
-        kind,
         root: package_root,
-        source_roots,
         config,
-        is_dependency,
     });
 }
 
-fn detect_package(dir: &Utf8Path) -> Option<(PackageKind, Utf8PathBuf)> {
-    let foundry = dir.join("foundry.toml");
-    if foundry.is_file() {
-        return Some((PackageKind::Foundry, foundry));
-    }
+fn detect_package(dir: &Utf8Path) -> Option<PackageDescriptor> {
+    let foundry_config = dir.join("foundry.toml").is_file().then(|| dir.join("foundry.toml"));
+    let hardhat_config = ["hardhat.config.ts", "hardhat.config.cts", "hardhat.config.mts", "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs"]
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file());
+    let package_json = dir.join("package.json");
+    let manifest = package_json.is_file().then(|| parse_package_manifest(&package_json)).flatten();
+    let remapping_file = dir.join("remappings.txt").is_file()
+        .then(|| dir.join("remappings.txt"));
 
-    for name in ["hardhat.config.ts", "hardhat.config.js", "hardhat.config.cjs"] {
-        let config = dir.join(name);
-        if config.is_file() {
-            return Some((PackageKind::Hardhat, config));
-        }
-    }
-
-    None
+    (foundry_config.is_some() || hardhat_config.is_some() || package_json.is_file() || remapping_file.is_some())
+        .then(|| PackageDescriptor {
+            root: normalize_path(dir),
+            foundry_config,
+            hardhat_config,
+            manifest,
+            remapping: remapping_file,
+            is_dependency: false,
+        })
 }
 
-fn find_package_roots(root: &Utf8Path) -> Vec<(PackageKind, Utf8PathBuf, Utf8PathBuf)> {
+fn parse_package_manifest(path: &Utf8Path) -> Option<PackageManifest> {
+    let text = fs::read_to_string(path).ok()?;
+    parse_package_manifest_text(&text)
+}
+
+fn parse_package_manifest_text(text: &str) -> Option<PackageManifest> {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let mut workspace_patterns = match value.get("workspaces") {
+        Some(serde_json::Value::Array(workspaces)) => workspaces.iter()
+            .filter_map(|pattern| pattern.as_str().map(String::from))
+            .collect(),
+        Some(serde_json::Value::Object(workspaces)) => workspaces.get("packages")
+            .and_then(serde_json::Value::as_array)
+            .map(|packages| packages.iter().filter_map(|pattern| pattern.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let mut dependency_names = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
+        .into_iter()
+        .filter_map(|key| value.get(key)?.as_object())
+        .flat_map(|dependencies| dependencies.keys().cloned())
+        .collect::<Vec<_>>();
+    workspace_patterns.sort();
+    workspace_patterns.dedup();
+    dependency_names.sort();
+    dependency_names.dedup();
+    Some(PackageManifest { workspace_patterns, dependency_names })
+}
+
+fn find_package_roots(root: &Utf8Path) -> Vec<PackageDescriptor> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_owned()];
 
-    while let Some(dir) = stack.pop() {//FIXME: add depth limit. This keeps going down a path until it finds a package
-        if let Some((kind, config)) = detect_package(&dir) {
-            out.push((kind, dir, config));
+    while let Some(dir) = stack.pop() {
+        if let Some(descriptor) = detect_package(&dir) {
+            out.push(descriptor);
             continue;
         }
 
@@ -224,19 +217,159 @@ fn find_package_roots(root: &Utf8Path) -> Vec<(PackageKind, Utf8PathBuf, Utf8Pat
         };
         for entry in entries.flatten() {
             if let Ok(ft) = entry.file_type() && ft.is_dir() {
-                let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
-                    continue;
-                };
-                let name = path.file_name().unwrap_or_default();
-                if PRUNED_DIRS.contains(&name) {
-                    continue;
+                if let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) 
+                && let Some(name) = path.file_name() 
+                && !PRUNED_DIRS.contains(&name) {
+                    stack.push(path);
                 }
-                stack.push(path);
             }
         }
     }
 
     out
+}
+
+/// Expand local packages, workspace packages, Foundry libraries, and npm
+/// dependencies into one deduplicated package graph.
+fn discover_package_graph(root: &Utf8Path) -> Vec<PackageDescriptor> {
+    let mut queue = find_package_roots(root);
+    let mut discovered = Vec::new();
+    let mut seen = FxHashMap::default();
+
+    while let Some(descriptor) = queue.pop() {
+        let package_root = normalize_path(&descriptor.root);//no need
+        if seen.insert(package_root.clone(), ()).is_some() {
+            continue;
+        }
+
+        let descriptor = PackageDescriptor { root: package_root.clone(), ..descriptor };
+        if let Some(config) = &descriptor.foundry_config {
+            let (_, dependency_roots, _) = foundry_layout(&descriptor.root, config, false);
+            for dependency_root in dependency_roots {
+                queue.extend(find_package_roots(&dependency_root).into_iter().map(|mut descriptor| {
+                    descriptor.is_dependency = true;
+                    descriptor
+                }));
+            }
+        }
+        for reference in package_references(&descriptor) {
+            let (package_root, is_dependency) = match reference {
+                PackageReference::Workspace(root) => (root, false),
+                PackageReference::Dependency(name) => {
+                    let Some(root) = resolve_node_package(&descriptor.root, &name) else { continue; };
+                    (root, true)
+                }
+            };
+            if !seen.contains_key(&package_root) {
+                let mut package = package_descriptor(&package_root);
+                package.is_dependency = is_dependency;
+                queue.push(package);
+            }
+        }
+        discovered.push(descriptor);
+    }
+
+    discovered
+}
+
+fn package_descriptor(root: &Utf8Path) -> PackageDescriptor {
+    detect_package(root).unwrap_or_else(|| PackageDescriptor {
+        root: normalize_path(root),
+        ..PackageDescriptor::default()
+    })
+}
+
+/// Read one package.json and return both local workspace references and npm
+/// dependency references. Keeping this in one function ensures the manifest is
+/// parsed once and both kinds of package edges enter the same graph traversal.
+fn package_references(descriptor: &PackageDescriptor) -> Vec<PackageReference> {
+    let Some(manifest) = &descriptor.manifest else {
+        return Vec::new();
+    };
+    let mut references = Vec::new();
+
+    for pattern in &manifest.workspace_patterns {
+        if let Some(parent) = pattern.strip_suffix("/*") {
+            let directory = descriptor.root.join(parent);
+            if let Ok(entries) = fs::read_dir(directory) {
+                references.extend(entries.flatten()
+                    .filter_map(|entry| Utf8PathBuf::from_path_buf(entry.path()).ok())
+                    .filter(|path| path.is_dir())
+                    .map(|path| PackageReference::Workspace(normalize_path(&path))));
+            }
+        } else {
+            let path = descriptor.root.join(pattern);
+            if path.is_dir() {
+                references.push(PackageReference::Workspace(normalize_path(&path)));
+            }
+        }
+    }
+    references.extend(manifest.dependency_names.iter().cloned().map(PackageReference::Dependency));
+    references
+}
+
+fn resolve_node_package(owner: &Utf8Path, name: &str) -> Option<Utf8PathBuf> {
+    let mut current = Some(owner);
+    while let Some(directory) = current {
+        let candidate = directory.join("node_modules").join(name);
+        if candidate.join("package.json").is_file() {
+            return Some(normalize_path(&candidate));
+        }
+        current = directory.parent();
+    }
+    None
+}
+
+/// Merge every configuration source present at a package root. A package can
+/// combine Foundry, Hardhat, npm, and remapping configuration.
+fn package_layout(
+    descriptor: &PackageDescriptor,
+    include_dev_source_roots: bool,
+    is_dependency: bool,
+) -> (Vec<Utf8PathBuf>, PackageConfig) {
+    let mut source_root_dirs = Vec::new();
+    let mut remappings = Vec::new();
+
+    if let Some(config) = &descriptor.foundry_config {
+        let (dirs, _, config) = foundry_layout(&descriptor.root, config, include_dev_source_roots);
+        source_root_dirs.extend(dirs);
+        remappings.extend(config.remappings);
+    }
+    if let Some(config) = &descriptor.hardhat_config {
+        let (dirs, config) = hardhat_layout(&descriptor.root, config, include_dev_source_roots);
+        source_root_dirs.extend(dirs);
+        remappings.extend(config.remappings);
+    }
+    if let Some(remapping_file) = &descriptor.remapping {
+        remappings.extend(parse_remappings_txt(remapping_file).unwrap_or_default());
+    }
+    if let Some(manifest) = &descriptor.manifest {
+        for dependency in &manifest.dependency_names {
+            if let Some(dependency_root) = resolve_node_package(&descriptor.root, dependency) {
+                remappings.push(Remapping {
+                    prefix: format!("{dependency}/"),
+                    target: dependency_root,
+                });
+            }
+        }
+    }
+    remappings.sort_by(|left, right| left.prefix.cmp(&right.prefix));
+    remappings.dedup();
+
+    if source_root_dirs.is_empty() {
+        let default_root = if is_dependency {
+            descriptor.root.clone()
+        } else {
+            descriptor.root.join("contracts")
+        };
+        if default_root.is_dir() {
+            source_root_dirs.push(default_root);
+        }
+    }
+
+    source_root_dirs.sort();
+    source_root_dirs.dedup();
+    (source_root_dirs, PackageConfig { remappings })
 }
 
 fn foundry_layout(
@@ -301,59 +434,48 @@ fn foundry_layout(
     )
 }
 
-///used by editor, remove after editor refactor
-pub(crate) fn generate_package(root: &Utf8Path, config: Utf8PathBuf, kind: PackageKind) -> Package {
-    match kind {
-        PackageKind::Foundry => {
-            let remappings_txt = root.join("remappings.txt");
-            let mut remappings = Vec::new();
-
-            if remappings_txt.is_file() {
-                // remappings.txt overrides foundry.toml entirely
-                remappings = parse_remappings_txt(&remappings_txt).unwrap_or_default();
-            }
-
-            let (_, toml_remappings) = fs::read_to_string(&config)
-                .ok()
-                .and_then(|text| parse_foundry_toml(&text, remappings.is_empty()))
-                .unwrap_or_else(|| ("src".to_string(), Vec::new()));
-
-            remappings.extend(toml_remappings);
-
-            Package { 
-                kind, 
-                root: root.to_path_buf(), 
-                source_roots: vec![],
-                config: PackageConfig { remappings },
-                is_dependency: false,
-            }
-        },
-        PackageKind::Hardhat => {
-            Package { 
-                kind, 
-                root: root.to_path_buf(), 
-                source_roots: vec![],
-                config: PackageConfig::default(),
-                is_dependency: false,
-            }
-        }
-    }
-
-}
-
-///@TODO hardhat layout still needs work
 fn hardhat_layout(
     root: &Utf8Path,
-    _config: &Utf8Path,
+    config: &Utf8Path,
+    include_dev_source_roots: bool,
 ) -> (
     Vec<Utf8PathBuf>,
     PackageConfig,
 ) {
-    let source_root_dirs = std::iter::once(root.join("contracts"))
-        .filter(|d| d.is_dir())
+    let base = config.parent().unwrap_or(root);
+    let source_dir = base.join(parse_hardhat_path(config, "sources")
+        .unwrap_or_else(|| "contracts".to_string()));
+    let mut source_root_dirs = source_dir.is_dir()
+        .then_some(source_dir)
+        .into_iter()
         .collect::<Vec<_>>();
 
+    if include_dev_source_roots {
+        let tests_dir = base.join(parse_hardhat_path(config, "tests")
+            .unwrap_or_else(|| "test".to_string()));
+        if tests_dir.is_dir() {
+            source_root_dirs.push(tests_dir);
+        }
+    }
+
     (source_root_dirs, PackageConfig::default())
+}
+
+fn parse_hardhat_path(config: &Utf8Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(config).ok()?;
+    parse_hardhat_path_text(&text, key)
+}
+
+fn parse_hardhat_path_text(text: &str, key: &str) -> Option<String> {
+    let key_start = text.find(key)?;
+    let remainder = &text[key_start + key.len()..];
+    let separator = remainder.find([':', '='])?;
+    let value = remainder[separator + 1..].trim_start();
+    let quote = value.chars().next().filter(|quote| matches!(quote, '\'' | '"'))?;
+    let value = &value[quote.len_utf8()..];
+    let end = value.find(quote)?;
+    let path = value[..end].trim();
+    (!path.is_empty()).then(|| path.to_string())
 }
 
 /// Extracts (src_dir, remappings) from foundry.toml.
@@ -476,4 +598,41 @@ fn collect_sol_files(dirs: &[Utf8PathBuf]) -> Vec<Utf8PathBuf> {
     drop(tx);
 
     rx.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_hardhat_path_text, parse_package_manifest_text};
+
+    #[test]
+    fn parses_static_hardhat_paths() {
+        let config = r#"
+            export default {
+                paths: {
+                    sources: "./src",
+                    tests: './test'
+                }
+            };
+        "#;
+
+        assert_eq!(parse_hardhat_path_text(config, "sources"), Some("./src".into()));
+        assert_eq!(parse_hardhat_path_text(config, "tests"), Some("./test".into()));
+        assert_eq!(parse_hardhat_path_text(config, "cache"), None);
+    }
+
+    #[test]
+    fn parses_workspace_and_dependency_references_from_one_manifest() {
+        let manifest = parse_package_manifest_text(r#"
+            {
+                "workspaces": { "packages": ["packages/*"] },
+                "dependencies": { "ethers": "^6.0.0", "solmate": "^6.0.0" },
+                "devDependencies": { "hardhat": "^3.0.0" },
+                "peerDependencies": { "viem": "^2.0.0" }
+            }
+        "#).unwrap();
+
+        assert_eq!(manifest.workspace_patterns, vec!["packages/*"]);
+        assert_eq!(manifest.dependency_names, vec!["ethers", "hardhat", "solmate", "viem"]);
+    }
+
 }
