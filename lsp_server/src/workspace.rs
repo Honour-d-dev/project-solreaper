@@ -52,14 +52,15 @@ enum PackageReference {
     Dependency(String),
 }
 
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Package {
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Package {
     pub root: Utf8PathBuf,
     pub config: PackageConfig,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoveredSourceRoot {
+    pub root: Utf8PathBuf,
     pub package_id: PackageId,
     pub files: Vec<Utf8PathBuf>,
     pub is_dependency: bool,
@@ -137,8 +138,9 @@ fn add_package(
     let package_id = PackageId(workspace.packages.len());
     workspace.package_id.insert(package_root.clone(), package_id);
 
-    for (_root, root_files) in collected_roots {
+    for (root, root_files) in collected_roots {
         discovered_source_roots.push(DiscoveredSourceRoot {
+            root,
             package_id,
             files: root_files,
             is_dependency,

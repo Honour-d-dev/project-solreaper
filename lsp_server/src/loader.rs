@@ -30,6 +30,7 @@ pub(crate) struct LoadedFile {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourceRootBundle {
+    pub root: Utf8PathBuf,
     pub package_id: PackageId,
     pub is_dependency: bool,
     pub files: Vec<LoadedFile>,
@@ -87,6 +88,7 @@ impl Loader {
                 .tx
                 .send(LoadMsg::SourceRootBundle {
                     bundle: SourceRootBundle {
+                        root: source_root.root.clone(),
                         package_id: source_root.package_id,
                         is_dependency: source_root.is_dependency,
                         files,

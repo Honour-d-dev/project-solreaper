@@ -7,7 +7,8 @@ use tree_sitter::Tree;
 use crate::ast::{Ast, AstIdMap, AstNode};
 use crate::ir::def_map::{Collector, DefMap};
 use crate::ir::item_tree::{ItemTree, Lowerer};
-use super::db::{File, FileId, Package, Packages, SalsaDatabase, SourceRootId};
+use crate::workspace::Package;
+use super::db::{File, FileId, Packages, SalsaDatabase, SourceRootId};
 
 //caching this so we only do it once per revision. but does this means we store 2 copies of all files?
 #[salsa::tracked]//manage lru
@@ -17,7 +18,7 @@ pub fn text(db: &dyn salsa::Database, file: File) -> Arc<str> {
 
 #[salsa::tracked(returns(ref))]
 pub fn package_config(db: &dyn salsa::Database, root: SourceRootId) -> Package {
-    let package_id = root.source_root(db).package_id;
+    let package_id = root.package_id(db);
     Packages::get(db).packages(db).get(package_id.0).cloned().unwrap()
 }
 
@@ -81,7 +82,7 @@ impl RootDatabase for SalsaDatabase {
     }
 
     fn file_source_root(&self, file: FileId) -> SourceRootId {
-        self.files.file_source_root.get(&file).cloned().unwrap()
+        self.files.file_source_root.get(&file).cloned().expect("file has no root")
     }
 
     fn package_config(&self, root: SourceRootId) -> &Package {

@@ -34,7 +34,8 @@ impl SolidityLspServer {
         let root_path = to_utf8path(&root_uri.context("root_uri is missing")?)?;
         //@NOTE No vfs for now, we only use utf8Paths, pathing may not be compatible with windows filesystem
 
-        let (workspace, source_bundle) = loader::load_workspace(root_path);// Block on workspace loading
+        // Block on workspace loading
+        let (workspace, source_bundle) = loader::load_workspace(root_path);
         log_info("Workspace fully loaded");
 
         let db = SalsaDb::new(workspace, source_bundle);
@@ -49,9 +50,9 @@ impl SolidityLspServer {
     pub(crate) fn run(mut self, receiver: crossbeam_channel::Receiver<Message>) -> anyhow::Result<()> {
         for msg in receiver {
             match msg {
-                Message::Request(r)      => self.handle_request(r)?,
+                Message::Request(r) => self.handle_request(r)?,
                 Message::Notification(n) => self.handle_notification(n)?,
-                Message::Response(_)     => {}
+                Message::Response(_) => {}
             }
         }
         Ok(())
@@ -117,11 +118,7 @@ impl SolidityLspServer {
             let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
             let path = to_utf8path(&params.text_document.uri)?;
 
-            log_info(format!("Opened {}", path));//.path returns absolute path
-
             self.db.open(path, params.text_document.text);
-          
-            
             return Ok(());
         }
     

@@ -18,15 +18,19 @@ impl Default for IncrementalParser {
 impl IncrementalParser {
     fn new() -> Self {
         let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_solidity::LANGUAGE.into()).unwrap();
+        parser.set_language(&tree_sitter_solidity::LANGUAGE.into()).expect("parser set language");
         Self {
             parser,
             cache: FxHashMap::default(),
         }
     }
 
-    pub fn apply_tree_edit(&mut self, file: File, edit: &InputEdit) {
-        self.cache.get_mut(&file).unwrap().edit(edit);
+    pub fn update(&mut self, file: File, edit: &InputEdit) {
+        self.cache.get_mut(&file).map(|tree| tree.edit(edit));
+    }
+
+    pub fn invalidate(&mut self, file: File) {
+        self.cache.remove(&file);
     }
 
     pub fn parse(&mut self, db: &dyn RootDatabase, file: File) -> Tree {

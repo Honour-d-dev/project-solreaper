@@ -466,6 +466,7 @@ mod tests {
         };
 
         let bundle = SourceRootBundle {
+            root: root.clone(),
             package_id: PackageId(0),
             is_dependency: false,
             files: vec![LoadedFile {

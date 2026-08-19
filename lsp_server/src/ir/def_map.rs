@@ -339,7 +339,7 @@ pub struct Collector<'db> {
 
 impl<'db> Collector<'db> {
     pub fn collect_defmap(db: &'db dyn RootDatabase, source_root_id: SourceRootId) -> DefMap {
-        let files = source_root_id.source_root(db).files.as_ref();
+        let files = source_root_id.files(db).as_ref();
 
         let mut collector = Collector {
             db,

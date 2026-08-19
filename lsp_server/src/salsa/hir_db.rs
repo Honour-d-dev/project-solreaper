@@ -299,7 +299,7 @@ fn normalize_doc(raw: &str) -> String {
             } else if let Some(text) = trimmed_line.strip_prefix("@author") {
                 format!("**Author:**{}", text)
             } else if let Some(text) = trimmed_line.strip_prefix("@custom:") {
-                format!("**Custom:** {}", text.trim())
+                format!("**Custom:** {}", text)
             } else {
                 trimmed_line.to_string()
             }
